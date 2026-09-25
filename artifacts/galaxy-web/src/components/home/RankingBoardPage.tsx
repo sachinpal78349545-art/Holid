@@ -1,5 +1,8 @@
 // RankingBoardPage.tsx
 import React, { useState, useMemo, useEffect } from "react";
+import { onValue, ref } from "firebase/database";
+import { db } from "../../lib/firebase";
+import { UserProfile } from "../../lib/userService";
 
 /* =========================================================
    TYPES
@@ -7,99 +10,97 @@ import React, { useState, useMemo, useEffect } from "react";
 
 type TabType = "Global" | "Friends" | "Weekly" | "Monthly";
 
-interface PodiumUser {
-  rank: 1 | 2 | 3;
+interface RankingUser {
+  uid: string;
   name: string;
-  diamonds: string;
-  avatarId: number;
-  crown: string;
-}
-
-interface RankUser {
-  rank: string;
-  name: string;
-  diamonds: string;
-  avatarId: number;
+  avatar: string;
+  diamonds: number;
 }
 
 interface Props {
+  user?: UserProfile;
   onBack?: () => void;
 }
 
-/* =========================================================
-   DATA
-========================================================= */
-
-const PODIUM_DATA: Record<TabType, PodiumUser[]> = {
-  Global: [
-    { rank: 1, name: "SHAMEER", diamonds: "125.6K", avatarId: 12, crown: "♛" },
-    { rank: 2, name: "RoyalGirl", diamonds: "88.4K", avatarId: 47, crown: "♔" },
-    { rank: 3, name: "Noor", diamonds: "76.2K", avatarId: 32, crown: "♔" },
-  ],
-  Friends: [
-    { rank: 1, name: "BestFriend", diamonds: "94.2K", avatarId: 5, crown: "♛" },
-    { rank: 2, name: "Rahul", diamonds: "78.4K", avatarId: 7, crown: "♔" },
-    { rank: 3, name: "Anjali", diamonds: "65.8K", avatarId: 25, crown: "♔" },
-  ],
-  Weekly: [
-    { rank: 1, name: "StarBoy", diamonds: "48.5K", avatarId: 11, crown: "♛" },
-    { rank: 2, name: "Noor", diamonds: "41.2K", avatarId: 32, crown: "♔" },
-    { rank: 3, name: "Devil", diamonds: "36.8K", avatarId: 14, crown: "♔" },
-  ],
-  Monthly: [
-    { rank: 1, name: "QueenRiya", diamonds: "189.2K", avatarId: 44, crown: "♛" },
-    { rank: 2, name: "StarBoy", diamonds: "168.6K", avatarId: 11, crown: "♔" },
-    { rank: 3, name: "Ayaan", diamonds: "149.4K", avatarId: 68, crown: "♔" },
-  ],
-};
-
-const LIST_DATA: Record<TabType, RankUser[]> = {
-  Global: [
-    { rank: "4", name: "StarBoy", diamonds: "64.8K", avatarId: 11 },
-    { rank: "5", name: "QueenRiya", diamonds: "52.3K", avatarId: 44 },
-    { rank: "6", name: "Devil", diamonds: "48.6K", avatarId: 14 },
-    { rank: "7", name: "Ayaan", diamonds: "42.1K", avatarId: 68 },
-    { rank: "8", name: "Zara", diamonds: "38.7K", avatarId: 15 },
-  ],
-  Friends: [
-    { rank: "4", name: "BestFriend", diamonds: "54.5K", avatarId: 5 },
-    { rank: "5", name: "Rahul", diamonds: "48.2K", avatarId: 7 },
-    { rank: "6", name: "Anjali", diamonds: "43.8K", avatarId: 25 },
-    { rank: "7", name: "Vicky", diamonds: "39.4K", avatarId: 18 },
-    { rank: "8", name: "Sana", diamonds: "35.1K", avatarId: 29 },
-  ],
-  Weekly: [
-    { rank: "4", name: "StarBoy", diamonds: "31.8K", avatarId: 11 },
-    { rank: "5", name: "Noor", diamonds: "28.7K", avatarId: 32 },
-    { rank: "6", name: "Devil", diamonds: "25.4K", avatarId: 14 },
-    { rank: "7", name: "Ayaan", diamonds: "22.8K", avatarId: 68 },
-    { rank: "8", name: "Zara", diamonds: "19.5K", avatarId: 15 },
-  ],
-  Monthly: [
-    { rank: "4", name: "QueenRiya", diamonds: "89.2K", avatarId: 44 },
-    { rank: "5", name: "StarBoy", diamonds: "78.6K", avatarId: 11 },
-    { rank: "6", name: "Ayaan", diamonds: "69.4K", avatarId: 68 },
-    { rank: "7", name: "Devil", diamonds: "61.2K", avatarId: 14 },
-    { rank: "8", name: "Zara", diamonds: "57.8K", avatarId: 15 },
-  ],
-};
-
 const TABS: TabType[] = ["Global", "Friends", "Weekly", "Monthly"];
+
+function formatDiamonds(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(Math.max(0, Math.round(value)));
+}
+
+function avatarIsImage(avatar: string): boolean {
+  return avatar.startsWith("http") || avatar.startsWith("data:");
+}
+
+function periodScore(profile: UserProfile, tab: TabType): number {
+  if (tab === "Global" || tab === "Friends") return profile.coins || 0;
+  const duration = tab === "Weekly" ? 7 : 31;
+  const since = Date.now() - duration * 24 * 60 * 60 * 1000;
+  return Object.values(profile.transactions || {}).reduce((sum, tx) => {
+    if (tx.timestamp < since || tx.amount <= 0) return sum;
+    return sum + tx.amount;
+  }, 0);
+}
 
 /* =========================================================
    COMPONENT
 ========================================================= */
 
-export default function RankingBoardPage({ onBack }: Props) {
+export default function RankingBoardPage({ user, onBack }: Props) {
   const [tab, setTab] = useState<TabType>("Global");
+  const [profiles, setProfiles] = useState<UserProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
-  const podium = PODIUM_DATA[tab];
-  const list = LIST_DATA[tab];
+  useEffect(() => {
+    const usersRef = ref(db, "users");
+    setLoading(true);
+    const unsubscribe = onValue(
+      usersRef,
+      (snapshot) => {
+        const value = snapshot.val() || {};
+        setProfiles(
+          Object.entries(value).map(([uid, profile]) => ({
+            ...(profile as UserProfile),
+            uid: (profile as UserProfile).uid || uid,
+          }))
+        );
+        setLoadError("");
+        setLoading(false);
+      },
+      () => {
+        setLoadError("Unable to load live rankings right now.");
+        setLoading(false);
+      }
+    );
+    return unsubscribe;
+  }, []);
 
-  /* Extract podium order: 1st, 2nd, 3rd */
-  const first = useMemo(() => podium.find((p) => p.rank === 1)!, [podium]);
-  const second = useMemo(() => podium.find((p) => p.rank === 2)!, [podium]);
-  const third = useMemo(() => podium.find((p) => p.rank === 3)!, [podium]);
+  const rankedUsers = useMemo<RankingUser[]>(() => {
+    const friendIds = new Set([
+      ...(user?.friendsList || []),
+      ...(user?.followingList || []),
+      ...(user?.uid ? [user.uid] : []),
+    ]);
+    return profiles
+      .filter((profile) => tab !== "Friends" || friendIds.has(profile.uid))
+      .map((profile) => ({
+        uid: profile.uid,
+        name: profile.name || "Galaxy User",
+        avatar: profile.avatar || "👤",
+        diamonds: periodScore(profile, tab),
+      }))
+      .sort((a, b) => b.diamonds - a.diamonds || a.name.localeCompare(b.name));
+  }, [profiles, tab, user]);
+
+  const podium = rankedUsers.slice(0, 3);
+  const list = rankedUsers.slice(3);
+
+  const first = podium[0];
+  const second = podium[1];
+  const third = podium[2];
 
   /* Lock body scroll on mount */
   useEffect(() => {
@@ -155,89 +156,90 @@ export default function RankingBoardPage({ onBack }: Props) {
           <p>{tab} users with the most diamonds</p>
         </div>
 
-        {/* PODIUM */}
-        <div className="rb-podium">
-          {/* 2nd Place */}
-          <div className="rb-person rb-second">
-            <div className="rb-avatar-wrap">
-              <div className="rb-crown">{second.crown}</div>
-              <img
-                className="rb-avatar"
-                src={`https://i.pravatar.cc/200?img=${second.avatarId}`}
-                alt={second.name}
-              />
-              <div className="rb-rank">2</div>
-            </div>
-            <div className="rb-pillar">
-              <div className="rb-name">{second.name}</div>
-              <div className="rb-diamonds">
-                <span className="rb-diamond">💎</span>
-                {second.diamonds}
-              </div>
-            </div>
+        {loading ? (
+          <div className="rb-state">Loading live rankings…</div>
+        ) : loadError ? (
+          <div className="rb-state">{loadError}</div>
+        ) : rankedUsers.length === 0 ? (
+          <div className="rb-state">
+            {tab === "Friends" ? "No friends are ranked yet." : "No ranking data available yet."}
           </div>
+        ) : (
+          <>
+            {/* PODIUM */}
+            <div className="rb-podium">
+              {second && (
+                <div className="rb-person rb-second">
+                  <div className="rb-avatar-wrap">
+                    <div className="rb-crown">♔</div>
+                    {avatarIsImage(second.avatar) ? (
+                      <img className="rb-avatar" src={second.avatar} alt={second.name} />
+                    ) : (
+                      <div className="rb-avatar rb-avatar-text">{second.avatar}</div>
+                    )}
+                    <div className="rb-rank">2</div>
+                  </div>
+                  <div className="rb-pillar">
+                    <div className="rb-name">{second.name}</div>
+                    <div className="rb-diamonds"><span className="rb-diamond">💎</span>{formatDiamonds(second.diamonds)}</div>
+                  </div>
+                </div>
+              )}
 
-          {/* 1st Place */}
-          <div className="rb-person rb-first">
-            <div className="rb-avatar-wrap">
-              <div className="rb-crown">{first.crown}</div>
-              <img
-                className="rb-avatar"
-                src={`https://i.pravatar.cc/200?img=${first.avatarId}`}
-                alt={first.name}
-              />
-              <div className="rb-rank">1</div>
-            </div>
-            <div className="rb-pillar">
-              <div className="rb-name">{first.name}</div>
-              <div className="rb-diamonds">
-                <span className="rb-diamond">💎</span>
-                {first.diamonds}
-              </div>
-            </div>
-          </div>
+              {first && (
+                <div className="rb-person rb-first">
+                  <div className="rb-avatar-wrap">
+                    <div className="rb-crown">♛</div>
+                    {avatarIsImage(first.avatar) ? (
+                      <img className="rb-avatar" src={first.avatar} alt={first.name} />
+                    ) : (
+                      <div className="rb-avatar rb-avatar-text">{first.avatar}</div>
+                    )}
+                    <div className="rb-rank">1</div>
+                  </div>
+                  <div className="rb-pillar">
+                    <div className="rb-name">{first.name}</div>
+                    <div className="rb-diamonds"><span className="rb-diamond">💎</span>{formatDiamonds(first.diamonds)}</div>
+                  </div>
+                </div>
+              )}
 
-          {/* 3rd Place */}
-          <div className="rb-person rb-third">
-            <div className="rb-avatar-wrap">
-              <div className="rb-crown">{third.crown}</div>
-              <img
-                className="rb-avatar"
-                src={`https://i.pravatar.cc/200?img=${third.avatarId}`}
-                alt={third.name}
-              />
-              <div className="rb-rank">3</div>
+              {third && (
+                <div className="rb-person rb-third">
+                  <div className="rb-avatar-wrap">
+                    <div className="rb-crown">♔</div>
+                    {avatarIsImage(third.avatar) ? (
+                      <img className="rb-avatar" src={third.avatar} alt={third.name} />
+                    ) : (
+                      <div className="rb-avatar rb-avatar-text">{third.avatar}</div>
+                    )}
+                    <div className="rb-rank">3</div>
+                  </div>
+                  <div className="rb-pillar">
+                    <div className="rb-name">{third.name}</div>
+                    <div className="rb-diamonds"><span className="rb-diamond">💎</span>{formatDiamonds(third.diamonds)}</div>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="rb-pillar">
-              <div className="rb-name">{third.name}</div>
-              <div className="rb-diamonds">
-                <span className="rb-diamond">💎</span>
-                {third.diamonds}
-              </div>
-            </div>
-          </div>
-        </div>
 
-        {/* RANK LIST */}
-        <div className="rb-rank-list">
-          {list.map((user, index) => (
-            <div
-              key={user.rank}
-              className={`rb-row ${index === 0 ? "highlight" : ""}`}
-            >
-              <div className="rb-position">{user.rank}</div>
-              <img
-                className="rb-small-avatar"
-                src={`https://i.pravatar.cc/100?img=${user.avatarId}`}
-                alt={user.name}
-              />
-              <div className="rb-user-name">{user.name}</div>
-              <div className="rb-user-diamond">
-                <span>💎</span> {user.diamonds}
-              </div>
+            {/* RANK LIST */}
+            <div className="rb-rank-list">
+              {list.map((rankedUser, index) => (
+                <div key={rankedUser.uid} className={`rb-row ${index === 0 ? "highlight" : ""}`}>
+                  <div className="rb-position">{index + 4}</div>
+                  {avatarIsImage(rankedUser.avatar) ? (
+                    <img className="rb-small-avatar" src={rankedUser.avatar} alt={rankedUser.name} />
+                  ) : (
+                    <div className="rb-small-avatar rb-small-avatar-text">{rankedUser.avatar}</div>
+                  )}
+                  <div className="rb-user-name">{rankedUser.name}</div>
+                  <div className="rb-user-diamond"><span>💎</span> {formatDiamonds(rankedUser.diamonds)}</div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
       </div>
 
       {/* STYLES */}
@@ -379,6 +381,13 @@ export default function RankingBoardPage({ onBack }: Props) {
           border: 6px solid #f5b91d;
           background: #222;
         }
+        .rb-avatar-text {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 42px;
+          background: linear-gradient(135deg, #342060, #17104b);
+        }
         .rb-second .rb-avatar { border-color: #72d8ff; }
         .rb-third .rb-avatar  { border-color: #ff789d; }
 
@@ -473,6 +482,23 @@ export default function RankingBoardPage({ onBack }: Props) {
           height: 43px;
           border-radius: 50%;
           object-fit: cover;
+        }
+        .rb-small-avatar-text {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 22px;
+          background: #ecebff;
+        }
+        .rb-state {
+          min-height: 420px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 32px;
+          color: #c6c2f4;
+          text-align: center;
+          font-size: 14px;
         }
         .rb-user-name {
           flex: 1;

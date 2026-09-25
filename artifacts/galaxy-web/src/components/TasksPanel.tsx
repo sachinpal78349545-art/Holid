@@ -1,182 +1,57 @@
 // TasksPanel.tsx
 import React, { useState, useEffect, useMemo } from "react";
-import { UserProfile, gainXP } from "../lib/userService";
-import { ref, update } from "firebase/database";
-import { db } from "../lib/firebase";
+import { DailyTask, UserProfile, getDailyTaskProgress } from "../lib/userService";
 import { useToast } from "../lib/toastContext";
 
 /* =========================================================
    TYPES
 ========================================================= */
 
-interface TaskData {
-  id: number;
-  icon: string;
-  name: string;
-  description: string;
-  current: number;
-  total: number;
-  reward: number;
-  claimed: boolean;
-}
-
 interface TasksPanelProps {
   user: UserProfile;
   onClose: () => void;
   onUpdate?: (updated: Partial<UserProfile>) => void;
+  onTaskAction?: (taskId: string) => void;
 }
 
 /* =========================================================
    INITIAL TASK DATA
 ========================================================= */
 
-const INITIAL_TASKS: TaskData[] = [
-  {
-    id: 1,
-    icon: "💬",
-    name: "Send 10 Messages",
-    description: "Send messages in chat",
-    current: 7,
-    total: 10,
-    reward: 10,
-    claimed: false,
-  },
-  {
-    id: 2,
-    icon: "🎁",
-    name: "Send 1 Gift",
-    description: "Send a gift to any user",
-    current: 0,
-    total: 1,
-    reward: 30,
-    claimed: false,
-  },
-  {
-    id: 3,
-    icon: "👥",
-    name: "Follow 5 Users",
-    description: "Follow new users",
-    current: 4,
-    total: 5,
-    reward: 20,
-    claimed: false,
-  },
-  {
-    id: 4,
-    icon: "🎙️",
-    name: "Join a Voice Room",
-    description: "Stay in room for 5 minutes",
-    current: 3,
-    total: 5,
-    reward: 25,
-    claimed: false,
-  },
-];
-
 /* =========================================================
    MAIN COMPONENT
 ========================================================= */
 
-export default function TasksPanel({ user, onClose, onUpdate }: TasksPanelProps) {
+type TaskProgress = DailyTask & { progress: number; completed: boolean; claimedAt?: number };
+
+export default function TasksPanel({ user, onClose, onUpdate: _onUpdate, onTaskAction }: TasksPanelProps) {
   const { showToast } = useToast();
-  const [tasks, setTasks] = useState<TaskData[]>(INITIAL_TASKS);
+  const [tasks, setTasks] = useState<TaskProgress[]>(() => getDailyTaskProgress(user));
   const [balance, setBalance] = useState<number>(user.coins || 0);
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
-  const [showPopup, setShowPopup] = useState(false);
-  const [claiming, setClaiming] = useState(false);
 
   /* ---- Completed count ---- */
   const completedCount = useMemo(
-    () => tasks.filter((t) => t.current >= t.total).length,
+    () => tasks.filter((t) => t.completed).length,
     [tasks]
   );
 
-  /* ---- Lock body scroll when popup open ---- */
   useEffect(() => {
-    if (showPopup) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [showPopup]);
+    setBalance(user.coins || 0);
+    setTasks(getDailyTaskProgress(user));
+  }, [user]);
 
-  /* ---- Handle button click ---- */
-  const handleTaskButton = (taskId: number) => {
-    const task = tasks.find((t) => t.id === taskId);
-    if (!task) return;
-
-    // If task is complete → open claim popup
-    if (task.current >= task.total) {
-      if (!task.claimed) {
-        setSelectedTaskId(taskId);
-        setShowPopup(true);
-      }
+  const handleTaskButton = (task: TaskProgress) => {
+    if (task.completed) return;
+    if (task.id === "login_daily") {
+      showToast("Daily login completes automatically when you sign in.", "info");
       return;
     }
-
-    // Otherwise increment progress (demo)
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId ? { ...t, current: Math.min(t.current + 1, t.total) } : t
-      )
-    );
-  };
-
-  /* ---- Claim reward ---- */
-  const handleClaimReward = async () => {
-    if (selectedTaskId === null) return;
-    const task = tasks.find((t) => t.id === selectedTaskId);
-    if (!task || task.claimed) return;
-
-    setClaiming(true);
-
-    try {
-      const newBalance = (user.coins || 0) + task.reward;
-
-      // Update Firebase
-      await update(ref(db, `users/${user.uid}`), {
-        coins: newBalance,
-      });
-
-      // Update local state
-      setBalance(newBalance);
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === selectedTaskId ? { ...t, claimed: true } : t
-        )
-      );
-
-      // Notify parent
-      onUpdate?.({ coins: newBalance });
-
-      // Gain XP bonus
-      gainXP(user.uid, 5, user.xp, user.level).catch(console.error);
-
-      showToast(`+${task.reward} 💎 Claimed!`, "success");
-
-      setShowPopup(false);
-      setSelectedTaskId(null);
-    } catch (error) {
-      console.error("Claim error:", error);
-      showToast("Failed to claim reward", "error");
-    } finally {
-      setClaiming(false);
+    onTaskAction?.(task.id);
+    if (!onTaskAction) {
+      showToast("Complete the action in the app to earn this reward.", "info");
+      onClose();
     }
   };
-
-  /* ---- Close popup ---- */
-  const closePopup = () => {
-    if (claiming) return;
-    setShowPopup(false);
-    setSelectedTaskId(null);
-  };
-
-  const selectedTask = selectedTaskId
-    ? tasks.find((t) => t.id === selectedTaskId)
-    : null;
 
   /* =========================================================
      RENDER
@@ -213,20 +88,21 @@ export default function TasksPanel({ user, onClose, onUpdate }: TasksPanelProps)
         </div>
 
         {/* TASK LIST */}
-        {tasks.map((task, index) => {
-          const isComplete = task.current >= task.total;
-          const percent = Math.min(100, (task.current / task.total) * 100);
-          const isClaimed = task.claimed;
+        {tasks.length === 0 ? (
+          <div className="tc-empty">No daily tasks available right now.</div>
+        ) : tasks.map((task, index) => {
+          const isComplete = task.completed || task.progress >= task.target;
+          const percent = Math.min(100, (task.progress / task.target) * 100);
 
           let buttonText = "Go";
           let buttonClass = "tc-action";
 
-          if (isClaimed) {
-            buttonText = "✓ Claimed";
+          if (isComplete) {
+            buttonText = "✓ Completed";
             buttonClass = "tc-action claimed";
-          } else if (isComplete) {
-            buttonText = "Claim";
-            buttonClass = "tc-action claim";
+          } else if (task.id === "login_daily") {
+            buttonText = "Automatic";
+            buttonClass = "tc-action claimed";
           }
 
           return (
@@ -237,15 +113,15 @@ export default function TasksPanel({ user, onClose, onUpdate }: TasksPanelProps)
               <div className="tc-task-top">
                 <div className="tc-task-icon">{task.icon}</div>
                 <div className="tc-task-info">
-                  <h3>{task.name}</h3>
-                  <p>{task.description}</p>
+                  <h3>{task.title}</h3>
+                  <p>Complete this action to earn your reward</p>
                 </div>
                 <div className="tc-reward">💎 +{task.reward}</div>
               </div>
 
               <div className="tc-progress-row">
                 <div className="tc-count">
-                  {task.current}/{task.total}
+                  {task.progress}/{task.target}
                 </div>
                 <div className="tc-progress">
                   <div
@@ -257,8 +133,8 @@ export default function TasksPanel({ user, onClose, onUpdate }: TasksPanelProps)
 
               <button
                 className={buttonClass}
-                onClick={() => handleTaskButton(task.id)}
-                disabled={isClaimed}
+                onClick={() => handleTaskButton(task)}
+                disabled={isComplete || task.id === "login_daily"}
                 type="button"
               >
                 {buttonText}
@@ -268,55 +144,9 @@ export default function TasksPanel({ user, onClose, onUpdate }: TasksPanelProps)
         })}
 
         <div className="tc-info">
-          💡 <b>Complete a task</b> to unlock its reward. After completion, tap{" "}
-          <b>Claim</b> to collect your diamonds.
+          💡 Tap <b>Go</b> to open the real action. Progress and diamond rewards are saved automatically in Firebase.
         </div>
       </main>
-
-      {/* REWARD POPUP */}
-      {showPopup && selectedTask && (
-        <div
-          className="tc-overlay"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closePopup();
-          }}
-        >
-          <div className="tc-popup">
-            <div className="tc-close-row">
-              <button
-                className="tc-close"
-                onClick={closePopup}
-                aria-label="Close"
-                type="button"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="tc-reward-icon">💎</div>
-
-            <h2>Reward Unlocked!</h2>
-
-            <div className="tc-popup-text">
-              "{selectedTask.name}" completed! Your reward is ready to claim.
-            </div>
-
-            <div className="tc-reward-box">
-              <div className="tc-reward-amount">💎 +{selectedTask.reward}</div>
-              <small>Task Reward</small>
-            </div>
-
-            <button
-              className="tc-claim-reward"
-              onClick={handleClaimReward}
-              disabled={claiming}
-              type="button"
-            >
-              {claiming ? "Claiming..." : "Claim Reward"}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* STYLES */}
       <style>{`

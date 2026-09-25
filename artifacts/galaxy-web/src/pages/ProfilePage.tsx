@@ -50,6 +50,7 @@ interface Props {
   onAdminRecharge?: () => void;
   onOpenSubPage?: (pageId: string) => void;
   onCloseSubPage?: () => void;
+  onTaskAction?: (taskId: string) => void;
 }
 
 function getProfileAge(birthday: string): string {
@@ -93,6 +94,7 @@ export default function ProfilePage({
   onAdminRecharge,
   onOpenSubPage,
   onCloseSubPage,
+  onTaskAction,
 }: Props) {
   const [showTasksPanel, setShowTasksPanel] = useState(false);
   const [showRankingPage, setShowRankingPage] = useState(false);
@@ -655,6 +657,7 @@ export default function ProfilePage({
   if (showRankingPage) {
     return (
       <RankingBoardPage
+        user={user}
         onBack={() => {
           closeSubPage();
           setShowRankingPage(false);
@@ -4311,6 +4314,7 @@ export default function ProfilePage({
       {showTasksPanel && (
         <TasksPanel
           user={user}
+          onTaskAction={onTaskAction}
           onClose={() => { closeSubPage(); setShowTasksPanel(false); }}
           onUpdate={(updated) => onUpdate(updated as typeof user)}
         />

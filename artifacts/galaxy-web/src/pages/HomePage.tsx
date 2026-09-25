@@ -19,6 +19,7 @@ interface Props {
   onOpenSubPage?: (pageId: string) => void;
   onCloseSubPage?: () => void;
   onUpdateUser?: (u: UserProfile) => void;
+  onTaskAction?: (taskId: string) => void;
 }
 
 function StarField() {
@@ -61,7 +62,8 @@ export default function HomePage({
   onViewProfile,
   onOpenSubPage,
   onCloseSubPage,
-  onUpdateUser
+  onUpdateUser,
+  onTaskAction
 }: Props) {
   const [allUsers, setAllUsers] = useState<OnlineUser[]>([]);
   const [myRoom, setMyRoom] = useState<Room | null>(null);
@@ -154,6 +156,7 @@ export default function HomePage({
           onUpdate={(updatedUser) => {
             if (onUpdateUser) onUpdateUser(updatedUser);
           }}
+          onTaskAction={onTaskAction}
           onClose={() => {
             setShowTasks(false);
             if (onCloseSubPage) onCloseSubPage();
@@ -163,6 +166,7 @@ export default function HomePage({
 
       {showRanking && (
         <RankingBoardPage
+          user={user}
           onBack={() => {
             setShowRanking(false);
             if (onCloseSubPage) onCloseSubPage();

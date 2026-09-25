@@ -248,6 +248,23 @@ function AppInner() {
     window.history.pushState({ page: p }, "");
   };
 
+  const handleTaskAction = (taskId: string) => {
+    switch (taskId) {
+      case "send_messages":
+        changePage("chats");
+        break;
+      case "join_room":
+      case "send_gift":
+        changePage("rooms");
+        break;
+      case "login_daily":
+        showToast("Daily login is completed automatically.", "info");
+        break;
+      default:
+        showToast("Complete this action in the app to earn the reward.", "info");
+    }
+  };
+
   if (authLoading) {
     return (
       <div className="app-wrapper">
@@ -471,7 +488,17 @@ function AppInner() {
         )}
 
         <div key={pageKey} className="page-enter" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {page === "home" && <HomePage user={profile} onJoinRoom={joinRoom} onCreateRoom={handleCreateRoom} onViewProfile={(p) => setViewedProfile(p)} />}
+          {page === "home" && (
+            <HomePage
+              user={profile}
+              onJoinRoom={joinRoom}
+              onCreateRoom={handleCreateRoom}
+              onViewProfile={(p) => setViewedProfile(p)}
+              onOpenSubPage={(sub) => setSubPage(sub)}
+              onCloseSubPage={() => setSubPage(null)}
+              onTaskAction={handleTaskAction}
+            />
+          )}
           {page === "explore" && <ExplorePage user={profile} onMessage={(uid) => { setChatTargetUid(uid); changePage("chats"); }} onNavigate={(p) => changePage(p as NavPage)} />}
           {page === "rooms" && <RoomsPage user={profile} onJoinRoom={joinRoom} />}
           {page === "chats" && <ChatsPage user={profile} initialChatUid={chatTargetUid} onChatActive={setChatActive} onNewChat={() => changePage("search")} onExploreRooms={() => changePage("rooms")} />}
@@ -489,6 +516,7 @@ function AppInner() {
               onAdminRecharge={() => changePage("admin-recharge")}
               onOpenSubPage={(sub: string) => setSubPage(sub)}
               onCloseSubPage={() => setSubPage(null)}
+              onTaskAction={handleTaskAction}
             />
           )}
           {page === "recharge" && (

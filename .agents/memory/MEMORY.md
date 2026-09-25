@@ -1,1 +1,2 @@
 - [Root artifact routing](root-artifact-routing.md) — duplicate web artifacts on `/` can cause blank or 502 previews; keep one active root route per app.
+- [Daily task rewards](daily-task-rewards.md) — task progress and rewards are Firebase-owned; the UI must never increment progress or coins locally.
