@@ -8,6 +8,7 @@ import BannerCarousel from "../components/home/BannerCarousel";
 import GameSection from "../components/home/GameCard";
 import FriendSection from "../components/home/FriendSection";
 import TasksPanel from "../components/TasksPanel"; // 👈 sahi path
+import RankingBoardPage from "../components/home/RankingBoardPage";
 
 interface OnlineUser { uid: string; name: string; avatar: string; level?: number; }
 interface Props {
@@ -65,6 +66,7 @@ export default function HomePage({
   const [allUsers, setAllUsers] = useState<OnlineUser[]>([]);
   const [myRoom, setMyRoom] = useState<Room | null>(null);
   const [showTasks, setShowTasks] = useState(false);
+  const [showRanking, setShowRanking] = useState(false);
 
   useEffect(() => {
     if (user.hasRoom && user.myRoomId) {
@@ -102,6 +104,7 @@ export default function HomePage({
           onOpenSubPage={onOpenSubPage}
           onCloseSubPage={onCloseSubPage}
           setShowTasks={setShowTasks}
+          setShowRanking={setShowRanking}
         />
 
         <div style={{ padding: "0 16px" }}>
@@ -153,6 +156,15 @@ export default function HomePage({
           }}
           onClose={() => {
             setShowTasks(false);
+            if (onCloseSubPage) onCloseSubPage();
+          }}
+        />
+      )}
+
+      {showRanking && (
+        <RankingBoardPage
+          onBack={() => {
+            setShowRanking(false);
             if (onCloseSubPage) onCloseSubPage();
           }}
         />

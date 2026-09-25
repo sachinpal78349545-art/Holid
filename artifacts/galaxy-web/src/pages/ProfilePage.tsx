@@ -27,6 +27,7 @@ import { getOrCreateConversation } from "../lib/chatService";
 import { useToast } from "../lib/toastContext";
 import { getStoreItem, equipItem, unequipItem, getRarityColor, isPngFrame, getPngFramePath, isAnimatedFrame } from "../lib/storeService";
 import TasksPanel from "../components/TasksPanel";
+import RankingBoardPage from "../components/home/RankingBoardPage";
 import SuperAdminAvatar from "../components/SuperAdminAvatar";
 import { FramePreview } from "../components/frames/FrameAvatar";
 import FantasyFrame from "../components/frames/FantasyFrame";
@@ -94,6 +95,7 @@ export default function ProfilePage({
   onCloseSubPage,
 }: Props) {
   const [showTasksPanel, setShowTasksPanel] = useState(false);
+  const [showRankingPage, setShowRankingPage] = useState(false);
   const [showLevelPage, setShowLevelPage] = useState(false);
   const [showStorePage, setShowStorePage] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
@@ -625,7 +627,7 @@ export default function ProfilePage({
   };
 
   const QUICK_ACTIONS = [
-    { label: "Ranking", icon: Trophy, tone: "cream", action: () => setShowLevelPage(true) },
+    { label: "Ranking", icon: Trophy, tone: "cream", action: () => { openSubPage("ranking"); setShowRankingPage(true); } },
     { label: "My Store", icon: Store, tone: "peach", action: () => setShowStorePage(true) },
     { label: "Backpack", icon: Backpack, tone: "pink", action: () => handleMenu("backpack") },
     { label: "Referral", icon: UsersRound, tone: "rose", action: () => showToast("Referral center coming soon", "info") },
@@ -650,6 +652,16 @@ export default function ProfilePage({
   ];
 
   // ---------- CONDITIONAL RENDERS ----------
+  if (showRankingPage) {
+    return (
+      <RankingBoardPage
+        onBack={() => {
+          closeSubPage();
+          setShowRankingPage(false);
+        }}
+      />
+    );
+  }
   if (showLevelPage) {
     return <UserLevelPage user={user} onBack={() => setShowLevelPage(false)} onUpdate={onUpdate} />;
   }

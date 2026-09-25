@@ -6,9 +6,15 @@ interface Props {
   onOpenSubPage?: (pageId: string) => void;
   onCloseSubPage?: () => void;
   setShowTasks?: (show: boolean) => void;
+  setShowRanking?: (show: boolean) => void;
 }
 
-export default function Header({ user, onOpenSubPage, setShowTasks }: Props) {
+export default function Header({ user, onOpenSubPage, setShowTasks, setShowRanking }: Props) {
+  const handleRankingClick = () => {
+    if (onOpenSubPage) onOpenSubPage("ranking");
+    if (setShowRanking) setShowRanking(true);
+  };
+
   const handleTasksClick = () => {
     if (onOpenSubPage) onOpenSubPage("tasks");
     if (setShowTasks) setShowTasks(true);
@@ -32,6 +38,7 @@ export default function Header({ user, onOpenSubPage, setShowTasks }: Props) {
         
         {/* 1. Trophy / Ranking Button */}
         <button 
+          onClick={handleRankingClick}
           className="hp-top-icon" 
           style={{
             width: "44px", 
