@@ -1,0 +1,1 @@
+- [Root artifact routing](root-artifact-routing.md) — duplicate web artifacts on `/` can cause blank or 502 previews; keep one active root route per app.
