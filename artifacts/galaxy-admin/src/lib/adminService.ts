@@ -77,6 +77,40 @@ export interface GlobalAlert {
   active: boolean;
 }
 
+export interface RewardGift {
+  id: string;
+  emoji: string;
+  name: string;
+  cost: number;
+  enabled?: boolean;
+  url?: string;
+}
+
+export interface RewardStoreItem {
+  id: string;
+  name: string;
+  icon: string;
+  category: "frame" | "entry" | "theme";
+  price: number;
+  preview: string;
+  rarity: "common" | "rare" | "epic" | "legendary";
+  imageUrl?: string;
+}
+
+export type RewardKind = "diamonds" | "gift" | "store_item" | "image";
+
+export interface RewardPayload {
+  kind: RewardKind;
+  title: string;
+  description?: string;
+  amount?: number;
+  emoji?: string;
+  imageUrl?: string;
+  itemId?: string;
+  itemCategory?: string;
+  rarity?: string;
+}
+
 // ─── Updated getAllUsers with error handling ──────────────────
 export async function getAllUsers(): Promise<UserProfile[]> {
   try {
@@ -122,6 +156,147 @@ export async function getUser(uid: string): Promise<UserProfile | null> {
     console.error("Error fetching user:", error);
     return null;
   }
+}
+
+export const FALLBACK_REWARD_GIFTS: RewardGift[] = [
+  { id: "rose", emoji: "🌹", name: "Rose", cost: 10 },
+  { id: "heart", emoji: "❤️", name: "Heart", cost: 20 },
+  { id: "star", emoji: "⭐", name: "Star", cost: 50 },
+  { id: "crown", emoji: "👑", name: "Crown", cost: 100 },
+  { id: "diamond", emoji: "💎", name: "Diamond", cost: 200 },
+  { id: "rocket", emoji: "🚀", name: "Rocket", cost: 500 },
+];
+
+export const REWARD_STORE_ITEMS: RewardStoreItem[] = [
+  { id: "frame_golden_crown", name: "Golden Crown", icon: "👑", category: "frame", price: 1000, preview: "conic-gradient(from 0deg, #FFD700, #FFA500, #FF8C00, #FFD700)", rarity: "legendary" },
+  { id: "frame_neon_glow", name: "Neon Glow", icon: "💡", category: "frame", price: 1000, preview: "conic-gradient(from 0deg, #00ff88, #00ffff, #8a2be2, #00ff88)", rarity: "epic" },
+  { id: "frame_fire", name: "Inferno Blaze", icon: "🔥", category: "frame", price: 1000, preview: "conic-gradient(from 0deg, #ff4500, #ff8c00, #ff0000, #ff4500)", rarity: "epic" },
+  { id: "frame_ice_crystal", name: "Ice Crystal", icon: "❄️", category: "frame", price: 1000, preview: "conic-gradient(from 0deg, #00bfff, #e0f7fa, #4fc3f7, #00bfff)", rarity: "rare" },
+  { id: "frame_galaxy", name: "Galaxy Vortex", icon: "🌌", category: "frame", price: 1000, preview: "conic-gradient(from 0deg, #6a0dad, #1e90ff, #ff00ff, #6a0dad)", rarity: "legendary" },
+  { id: "entry_lightning", name: "Lightning Strike", icon: "⚡", category: "entry", price: 300, preview: "linear-gradient(135deg, #FFD700, #FF6B35)", rarity: "common" },
+  { id: "entry_stars", name: "Starfall", icon: "⭐", category: "entry", price: 600, preview: "linear-gradient(135deg, #6C5CE7, #A29BFE)", rarity: "rare" },
+  { id: "entry_phoenix", name: "Phoenix Rise", icon: "🦅", category: "entry", price: 1000, preview: "linear-gradient(135deg, #FF6B35, #FF1744)", rarity: "epic" },
+  { id: "entry_galaxy", name: "Galaxy Portal", icon: "🌀", category: "entry", price: 1800, preview: "linear-gradient(135deg, #0D47A1, #6C5CE7, #E040FB)", rarity: "legendary" },
+  { id: "theme_midnight", name: "Midnight Blue", icon: "🌙", category: "theme", price: 400, preview: "linear-gradient(180deg, #0D1B2A, #1B2838)", rarity: "common" },
+  { id: "theme_sakura", name: "Sakura Garden", icon: "🌸", category: "theme", price: 700, preview: "linear-gradient(180deg, #2D1B38, #1A0F2E)", rarity: "rare" },
+  { id: "theme_aurora", name: "Aurora Borealis", icon: "🌌", category: "theme", price: 2500, preview: "linear-gradient(180deg, #0A2E1A, #1A0F2E, #0D1B4A)", rarity: "legendary" },
+];
+
+export async function getRewardGifts(): Promise<RewardGift[]> {
+  const snap = await get(ref(db, "appConfig/gifts"));
+  if (!snap.exists()) return FALLBACK_REWARD_GIFTS;
+  const gifts = Object.values(snap.val() as Record<string, RewardGift>)
+    .filter(gift => gift.enabled !== false)
+    .sort((a, b) => a.cost - b.cost);
+  return gifts.length ? gifts : FALLBACK_REWARD_GIFTS;
+}
+
+export async function sendRewardToUser(
+  uid: string,
+  adminName: string,
+  payload: RewardPayload,
+): Promise<string> {
+  const user = await getUser(uid);
+  if (!user) throw new Error("User not found");
+  if (payload.kind === "diamonds" && (!payload.amount || payload.amount < 1 || payload.amount > 100000000)) {
+    throw new Error("Enter a valid diamond amount");
+  }
+  if (payload.kind === "image" && !payload.imageUrl) throw new Error("Upload a PNG reward image");
+
+  const rewardId = `reward_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const now = Date.now();
+  const conversationId = `reward_assistant_${uid}`;
+  const rewardRecord = {
+    id: rewardId,
+    recipientUid: uid,
+    ...payload,
+    sentBy: adminName || "Galaxy Admin",
+    createdAt: now,
+    status: "delivered",
+  };
+
+  if (payload.kind === "diamonds") {
+    await runTransaction(ref(db, `users/${uid}/coins`), current => (current ?? 0) + (payload.amount || 0));
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (payload.kind === "store_item" && payload.itemId) {
+    updates[`users/${uid}/inventory/${payload.itemId}`] = {
+      itemId: payload.itemId,
+      purchasedAt: now,
+      equipped: false,
+      grantedBy: "reward_assistant",
+    };
+  }
+  const txId = `tx_${rewardId}`;
+  updates[`users/${uid}/rewardRecords/${rewardId}`] = rewardRecord;
+  updates[`users/${uid}/transactions/${txId}`] = {
+    id: txId,
+    type: "gift_received",
+    amount: payload.amount || 0,
+    description: `Reward Assistant: ${payload.title}`,
+    timestamp: now,
+  };
+  updates[`notifications/${uid}/reward_${rewardId}`] = {
+    id: `reward_${rewardId}`,
+    type: "gift",
+    title: "Reward received",
+    body: payload.kind === "diamonds" ? `You received ${payload.amount} diamonds` : `You received ${payload.title}`,
+    icon: payload.emoji || "🎁",
+    read: false,
+    timestamp: now,
+    data: { rewardId, conversationId },
+  };
+  updates[`adminRewardHistory/${rewardId}`] = rewardRecord;
+
+  const conversationSnap = await get(ref(db, `conversations/${conversationId}`));
+  if (!conversationSnap.exists()) {
+    updates[`conversations/${conversationId}`] = {
+      id: conversationId,
+      participants: [uid, "system_reward_assistant"],
+      participantNames: [user.name || "User", "Reward Assistant"],
+      participantAvatars: [user.avatar || "", "🎁"],
+      participantIsSystem: { "0": false, "1": true },
+      lastMessage: payload.title,
+      lastMessageType: "reward",
+      lastTime: now,
+      unread: { [uid]: 1, system_reward_assistant: 0 },
+      createdAt: now,
+    };
+  } else {
+    const current = conversationSnap.val() || {};
+    updates[`conversations/${conversationId}/unread/${uid}`] = (current.unread?.[uid] || 0) + 1;
+    updates[`conversations/${conversationId}/lastMessage`] = payload.title;
+    updates[`conversations/${conversationId}/lastMessageType`] = "reward";
+    updates[`conversations/${conversationId}/lastTime`] = now;
+  }
+  updates[`userConvs/${uid}/${conversationId}`] = true;
+
+  const messageKey = push(ref(db, `messages/${conversationId}`)).key!;
+  updates[`messages/${conversationId}/${messageKey}`] = {
+    id: messageKey,
+    senderId: "system_reward_assistant",
+    senderName: "Reward Assistant",
+    senderDP: "🎁",
+    text: payload.title,
+    timestamp: now,
+    type: "reward",
+    status: "delivered",
+    reward: {
+      rewardId,
+      rewardType: payload.kind,
+      title: payload.title,
+      description: payload.description,
+      amount: payload.amount,
+      emoji: payload.emoji,
+      imageUrl: payload.imageUrl,
+      itemId: payload.itemId,
+      itemCategory: payload.itemCategory,
+      rarity: payload.rarity,
+    },
+  };
+  await update(ref(db), updates);
+  return rewardId;
 }
 
 export async function setUserCoins(uid: string, coins: number): Promise<void> {

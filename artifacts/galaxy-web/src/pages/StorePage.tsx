@@ -1,28 +1,27 @@
-/**
- * StorePage – Premium ChaloTalk-style store
- * Sections: Entry Messages · Frames · Themes
- * 
- * 🔥 All items (entry, frames, themes) loaded from Firebase
- * 🔥 Uses 💎 Diamonds (falls back to coins)
- * 🔥 Items expire after 24 hours (or custom validity)
- * 🔥 Expired items auto-removed & unequipped
- * 🔥 Purchase uses direct Firebase update (reliable)
- * 🔥 Entries support imageUrl (shows image instead of emoji)
- */
-import React, { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { ReactNode, useState, useEffect, useMemo } from "react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  Crown,
+  Diamond,
+  Image as ImageIcon,
+  ShoppingBag,
+  Sparkles,
+  ShieldCheck,
+  X,
+  Zap,
+} from "lucide-react";
 import { useToast } from "../lib/toastContext";
 import { UserProfile } from "../lib/userService";
-import {
-  STORE_ITEMS, StoreItem, getStoreItem,
-  equipItem, unequipItem,
-  getRarityColor, isAnimatedFrame, getFrameColors, getPngFramePath,
-} from "../lib/storeService";
-import AvatarFrame from "../components/frames/AvatarFrame";
 import { ref as dbRef, onValue, off, update } from "firebase/database";
 import { db } from "../lib/firebase";
 
-// ─── Types ──────────────────────────────────────────────────
+/* =========================================================
+   TYPES
+   ========================================================= */
+
+type StoreTab = "frames" | "themes" | "effects" | "badges";
+
 interface InventoryItem {
   itemId: string;
   purchasedAt: number;
@@ -30,465 +29,1094 @@ interface InventoryItem {
   equipped: boolean;
 }
 
-interface ExtendedStoreItem extends StoreItem {
+interface FirebaseItem {
+  id: string;
+  name: string;
+  price: number;
+  imageUrl?: string;
+  icon?: string;
+  tag?: string;
+  desc?: string;
+  enabled?: boolean;
+  rarity?: string;
+  iconType?: string;
   validity?: number;
   validityType?: "day" | "month" | "year";
-  gradient?: string;      // for entries
-  desc?: string;          // for entries
 }
 
+type PreviewItem =
+  | { type: "frame"; name: string; image: string; price: number }
+  | { type: "theme"; name: string; image: string; price: number }
+  | { type: "effect"; name: string; image: string; price: number }
+  | { type: "badge"; name: string; icon: ReactNode; price: number };
+
 interface Props {
-  user: UserProfile;        // must have `diamonds` or `coins`
+  user: UserProfile;
   onBack: () => void;
   onUpdate: (u: UserProfile) => void;
 }
 
-type Category = "entry" | "frame" | "theme";
+/* =========================================================
+   CONSTANTS
+   ========================================================= */
 
-const RARITY_LABEL: Record<string, string> = {
-  common: "COMMON", rare: "RARE", epic: "EPIC", legendary: "LEGENDARY",
+const BADGE_ICONS: Record<string, ReactNode> = {
+  crown: <Crown size={52} strokeWidth={1.7} />,
+  shield: <ShieldCheck size={52} strokeWidth={1.7} />,
+  sparkles: <Sparkles size={52} strokeWidth={1.7} />,
+  zap: <Zap size={52} strokeWidth={1.7} />,
 };
 
-// Default entry meta (fallback if not in DB)
-const DEFAULT_ENTRY_META: Record<string, { gradient: string; desc: string }> = {
-  entry_lightning: { gradient: "linear-gradient(135deg,#FFD700,#FF6B35)", desc: "Electrifying entrance!" },
-  entry_stars:     { gradient: "linear-gradient(135deg,#6C5CE7,#A29BFE)", desc: "Rain of stars follows you" },
-  entry_phoenix:   { gradient: "linear-gradient(135deg,#FF6B35,#FF1744)", desc: "Rise from the ashes" },
-  entry_galaxy:    { gradient: "linear-gradient(135deg,#0D47A1,#6C5CE7,#E040FB)", desc: "Galaxy portal opens" },
+const computeExpiry = (
+  validity: number = 1,
+  type: "day" | "month" | "year" = "day"
+): number => {
+  const ms =
+    type === "day" ? validity * 24 * 60 * 60 * 1000 :
+    type === "month" ? validity * 30 * 24 * 60 * 60 * 1000 :
+    validity * 365 * 24 * 60 * 60 * 1000;
+  return Date.now() + ms;
 };
 
-const computeExpiry = (validity: number = 1, type: "day" | "month" | "year" = "day"): number => {
-  const now = Date.now();
-  const ms = type === "day" ? validity * 24 * 60 * 60 * 1000 :
-             type === "month" ? validity * 30 * 24 * 60 * 60 * 1000 :
-             validity * 365 * 24 * 60 * 60 * 1000;
-  return now + ms;
-};
+/* =========================================================
+   HELPER
+   ========================================================= */
 
-// ─── Main Component ────────────────────────────────────────
+function truncateName(name: string, maxLength = 16) {
+  if (!name) return "";
+  if (name.length <= maxLength) return name;
+  return `${name.slice(0, maxLength)}...`;
+}
+
+/* =========================================================
+   MAIN STORE PAGE
+   ========================================================= */
+
 export default function StorePage({ user, onBack, onUpdate }: Props) {
   const { showToast } = useToast();
-  const [activeCategory, setActiveCategory] = useState<Category>("frame");
+
+  const [activeTab, setActiveTab] = useState<StoreTab>("frames");
+  const [selectedItem, setSelectedItem] = useState<PreviewItem | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
-  const [preview, setPreview] = useState<StoreItem | null>(null);
 
-  // ── Static items (only frames that are NOT dynamic?) ──
-  // We combine static frames with dynamic frames.
-  // For entries and themes, we only use dynamic.
-  const staticFrames = STORE_ITEMS.filter(i => i.category === "frame");
-  // staticEntries not used anymore because we load from DB
+  /* Real user data */
+  const diamonds = (user as any).diamonds ?? user.coins ?? 0;
+  const userAvatar = user.avatar || "https://i.pravatar.cc/300";
+  const userName = user.name || "User";
+  const inventory: Record<string, InventoryItem> = (user.inventory || {}) as any;
 
-  // ── Dynamic items from Firebase ──
-  const [dynamicEntries, setDynamicEntries] = useState<ExtendedStoreItem[]>([]);
-  const [dynamicFrames, setDynamicFrames] = useState<ExtendedStoreItem[]>([]);
-  const [dynamicThemes, setDynamicThemes] = useState<StoreItem[]>([]);
-  const [entriesLoading, setEntriesLoading] = useState(true);
-  const [framesLoading, setFramesLoading] = useState(true);
-  const [themesLoading, setThemesLoading] = useState(true);
+  /* Firebase items */
+  const [frameItems, setFrameItems] = useState<FirebaseItem[]>([]);
+  const [themeItems, setThemeItems] = useState<FirebaseItem[]>([]);
+  const [effectItems, setEffectItems] = useState<FirebaseItem[]>([]);
+  const [badgeItems, setBadgeItems] = useState<FirebaseItem[]>([]);
 
-  // ── Load entries ──
+  const [loadingItems, setLoadingItems] = useState({
+    frames: true,
+    themes: true,
+    effects: true,
+    badges: true,
+  });
+
+  /* ── Load Frames ── */
   useEffect(() => {
-    const ref = dbRef(db, "appConfig/entries");
-    const unsub = onValue(ref, (snap) => {
+    const r = dbRef(db, "appConfig/frames");
+    const unsub = onValue(r, (snap) => {
       if (snap.exists()) {
         const data = snap.val();
-        const items: ExtendedStoreItem[] = Object.values(data).map((e: any) => ({
-          id: e.id,
-          name: e.name,
-          category: "entry",
-          rarity: e.rarity || "common",
-          price: e.price || 0,
-          icon: e.icon || "🎉",
-          imageUrl: e.imageUrl || undefined,
-          preview: e.gradient || "rgba(0,0,0,0.2)",
-          enabled: e.enabled !== undefined ? e.enabled : true,
-          gradient: e.gradient || "linear-gradient(135deg,#6C5CE7,#A29BFE)",
-          desc: e.desc || "Special entry effect",
-          validity: e.validity || 1,
-          validityType: e.validityType || "day",
-        }));
-        setDynamicEntries(items);
+        const items: FirebaseItem[] = Object.values(data)
+          .filter((f: any) => f.enabled !== false)
+          .map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            price: f.price || 0,
+            imageUrl: f.imageUrl,
+            tag: f.tag,
+            enabled: true,
+            rarity: f.rarity || "rare",
+            validity: f.validity || 1,
+            validityType: f.validityType || "day",
+          }));
+        setFrameItems(items);
       } else {
-        setDynamicEntries([]);
+        setFrameItems([]);
       }
-      setEntriesLoading(false);
+      setLoadingItems((p) => ({ ...p, frames: false }));
     });
-    return () => off(ref, "value", unsub);
+    return () => off(r, "value", unsub);
   }, []);
 
-  // ── Load frames ──
+  /* ── Load Themes ── */
   useEffect(() => {
-    const ref = dbRef(db, "appConfig/frames");
-    const unsub = onValue(ref, (snap) => {
+    const r = dbRef(db, "appConfig/themes");
+    const unsub = onValue(r, (snap) => {
       if (snap.exists()) {
         const data = snap.val();
-        const items: ExtendedStoreItem[] = Object.values(data).map((f: any) => ({
-          id: f.id,
-          name: f.name,
-          category: "frame",
-          rarity: f.rarity || "rare",
-          price: f.price || 0,
-          icon: "🖼️",
-          imageUrl: f.imageUrl || undefined,
-          preview: f.imageUrl || "rgba(0,0,0,0.2)",
-          enabled: f.enabled !== undefined ? f.enabled : true,
-          validity: f.validity || 1,
-          validityType: f.validityType || "day",
-        }));
-        setDynamicFrames(items);
+        const items: FirebaseItem[] = Object.values(data)
+          .filter((t: any) => t.enabled !== false)
+          .map((t: any) => ({
+            id: t.id,
+            name: t.name,
+            price: t.price || 0,
+            imageUrl: t.imageUrl || t.preview,
+            tag: t.tag,
+            enabled: true,
+            rarity: t.rarity || "common",
+            validity: t.validity || 1,
+            validityType: t.validityType || "day",
+          }));
+        setThemeItems(items);
       } else {
-        setDynamicFrames([]);
+        setThemeItems([]);
       }
-      setFramesLoading(false);
+      setLoadingItems((p) => ({ ...p, themes: false }));
     });
-    return () => off(ref, "value", unsub);
+    return () => off(r, "value", unsub);
   }, []);
 
-  // ── Load themes ──
+  /* ── Load Effects ── */
   useEffect(() => {
-    const ref = dbRef(db, "appConfig/themes");
-    const unsub = onValue(ref, (snap) => {
+    const r = dbRef(db, "appConfig/entries");
+    const unsub = onValue(r, (snap) => {
       if (snap.exists()) {
         const data = snap.val();
-        const items: StoreItem[] = Object.values(data).map((t: any) => ({
-          id: t.id,
-          name: t.name,
-          category: "theme",
-          rarity: t.rarity || "common",
-          price: t.price || 0,
-          icon: t.icon || "🎨",
-          imageUrl: t.imageUrl || undefined,
-          preview: t.preview || "rgba(0,0,0,0.2)",
-          enabled: t.enabled !== undefined ? t.enabled : true,
-        }));
-        setDynamicThemes(items);
+        const items: FirebaseItem[] = Object.values(data)
+          .filter((e: any) => e.enabled !== false)
+          .map((e: any) => ({
+            id: e.id,
+            name: e.name,
+            price: e.price || 0,
+            imageUrl: e.imageUrl,
+            icon: e.icon || "🎉",
+            tag: e.tag,
+            desc: e.desc,
+            enabled: true,
+            rarity: e.rarity || "common",
+            validity: e.validity || 1,
+            validityType: e.validityType || "day",
+          }));
+        setEffectItems(items);
       } else {
-        setDynamicThemes([]);
+        setEffectItems([]);
       }
-      setThemesLoading(false);
+      setLoadingItems((p) => ({ ...p, effects: false }));
     });
-    return () => off(ref, "value", unsub);
+    return () => off(r, "value", unsub);
   }, []);
 
-  // ── Combine items ──
-  let items: StoreItem[] = [];
-  if (activeCategory === "entry") {
-    items = dynamicEntries;
-  } else if (activeCategory === "frame") {
-    const map = new Map<string, StoreItem>();
-    staticFrames.forEach(f => map.set(f.id, f));
-    dynamicFrames.forEach(f => map.set(f.id, f));
-    items = Array.from(map.values());
-  } else if (activeCategory === "theme") {
-    items = dynamicThemes;
-  }
-
-  // ── Currency ──
-  const diamonds = user.diamonds ?? user.coins ?? 0;
-  let inv = (user.inventory || {}) as Record<string, InventoryItem>;
-
-  // ── Clean expired items ──
-  const cleanExpiredItems = (inv: Record<string, InventoryItem>) => {
-    const now = Date.now();
-    const newInv: Record<string, InventoryItem> = {};
-    let changed = false;
-    const unequipUpdates: Partial<UserProfile> = {};
-
-    for (const [id, data] of Object.entries(inv)) {
-      if (data.expiresAt && data.expiresAt < now) {
-        changed = true;
-        if (data.equipped) {
-          const item = getStoreItem(id) || dynamicEntries.find(e => e.id === id) || dynamicFrames.find(f => f.id === id) || dynamicThemes.find(t => t.id === id);
-          if (item) {
-            if (item.category === "frame") unequipUpdates.equippedFrame = undefined;
-            else if (item.category === "entry") unequipUpdates.equippedEntry = undefined;
-            else if (item.category === "theme") unequipUpdates.equippedTheme = undefined;
-          }
-        }
-        continue;
+  /* ── Load Badges ── */
+  useEffect(() => {
+    const r = dbRef(db, "appConfig/badges");
+    const unsub = onValue(r, (snap) => {
+      if (snap.exists()) {
+        const data = snap.val();
+        const items: FirebaseItem[] = Object.values(data)
+          .filter((b: any) => b.enabled !== false)
+          .map((b: any) => ({
+            id: b.id,
+            name: b.name,
+            price: b.price || 0,
+            imageUrl: b.imageUrl,
+            iconType: b.iconType || "sparkles",
+            tag: b.tag,
+            enabled: true,
+            rarity: b.rarity || "rare",
+            validity: b.validity || 1,
+            validityType: b.validityType || "day",
+          }));
+        setBadgeItems(items);
+      } else {
+        setBadgeItems([]);
       }
-      newInv[id] = data;
-    }
+      setLoadingItems((p) => ({ ...p, badges: false }));
+    });
+    return () => off(r, "value", unsub);
+  }, []);
 
-    if (changed) {
-      const userRef = dbRef(db, `users/${user.uid}`);
-      const updates: any = { inventory: newInv };
-      if (unequipUpdates.equippedFrame !== undefined) updates.equippedFrame = null;
-      if (unequipUpdates.equippedEntry !== undefined) updates.equippedEntry = null;
-      if (unequipUpdates.equippedTheme !== undefined) updates.equippedTheme = null;
-      update(userRef, updates);
-      return { newInv, unequipUpdates };
-    }
-    return { newInv: inv, unequipUpdates: {} };
-  };
+  /* Current tab items */
+  const currentItems = useMemo(() => {
+    if (activeTab === "frames") return frameItems;
+    if (activeTab === "themes") return themeItems;
+    if (activeTab === "effects") return effectItems;
+    return badgeItems;
+  }, [activeTab, frameItems, themeItems, effectItems, badgeItems]);
 
-  const { newInv, unequipUpdates } = cleanExpiredItems(inv);
-  if (newInv !== inv || Object.keys(unequipUpdates).length > 0) {
-    const updatedUser = { ...user, inventory: newInv, ...unequipUpdates };
-    onUpdate(updatedUser);
-    inv = newInv;
-  }
+  const isLoadingCurrent = loadingItems[
+    activeTab === "frames" ? "frames" :
+    activeTab === "themes" ? "themes" :
+    activeTab === "effects" ? "effects" : "badges"
+  ];
 
-  // ── Purchase handler (DIRECT FIREBASE UPDATE) ──
-  const handleBuy = async (item: ExtendedStoreItem) => {
+  const tabs = [
+    { id: "frames" as StoreTab, label: "Frames", icon: <ImageIcon size={16} /> },
+    { id: "themes" as StoreTab, label: "Themes", icon: <Sparkles size={16} /> },
+    { id: "effects" as StoreTab, label: "Entry FX", icon: <Zap size={16} /> },
+    { id: "badges" as StoreTab, label: "Badges", icon: <Crown size={16} /> },
+  ];
+
+  /* =========================================================
+     BUY (Real Firebase update)
+     ========================================================= */
+  const handleBuy = async (item: FirebaseItem) => {
     if (diamonds < item.price) {
       showToast("Not enough 💎 Diamonds!", "warning");
       return;
     }
-    if (inv[item.id]) {
+    if (inventory[item.id]) {
       showToast("Already owned!", "info");
       return;
     }
-    setLoading(item.id);
 
+    setLoading(item.id);
     try {
       const newBalance = diamonds - item.price;
-      const now = Date.now();
-      let expiresAt: number;
-      if (item.validity && item.validityType) {
-        expiresAt = computeExpiry(item.validity, item.validityType);
-      } else {
-        expiresAt = computeExpiry(1, "day");
-      }
+      const expiresAt = computeExpiry(item.validity || 1, item.validityType || "day");
 
-      const newInv: Record<string, InventoryItem> = {
-        ...inv,
+      const newInventory: Record<string, InventoryItem> = {
+        ...inventory,
         [item.id]: {
           itemId: item.id,
-          purchasedAt: now,
-          expiresAt: expiresAt,
+          purchasedAt: Date.now(),
+          expiresAt,
           equipped: false,
-        }
+        },
       };
 
-      const userRef = dbRef(db, `users/${user.uid}`);
-      const updates: any = { inventory: newInv };
-      if (user.diamonds !== undefined) updates.diamonds = newBalance;
+      const updates: any = { inventory: newInventory };
+      if ((user as any).diamonds !== undefined) updates.diamonds = newBalance;
       if (user.coins !== undefined) updates.coins = newBalance;
-      await update(userRef, updates);
 
-      const updatedUser: any = { ...user, inventory: newInv };
-      if (user.diamonds !== undefined) updatedUser.diamonds = newBalance;
+      await update(dbRef(db, `users/${user.uid}`), updates);
+
+      const updatedUser: any = { ...user, inventory: newInventory };
+      if ((user as any).diamonds !== undefined) updatedUser.diamonds = newBalance;
       if (user.coins !== undefined) updatedUser.coins = newBalance;
       onUpdate(updatedUser);
 
-      const validityText = item.validity ? `${item.validity} ${item.validityType}(s)` : "24 hours";
-      showToast(`${item.name} purchased! ✨ (valid: ${validityText})`, "success");
-      setPreview(null);
-    } catch (error) {
-      console.error("Purchase error:", error);
+      showToast(`${item.name} purchased! ✨`, "success");
+      setSelectedItem(null);
+    } catch (err) {
+      console.error("Purchase error:", err);
       showToast("Purchase failed", "error");
     } finally {
       setLoading(null);
     }
   };
 
-  // ── Equip / Unequip ──
-  const handleEquip = async (itemId: string) => {
-    const item = getStoreItem(itemId) || dynamicEntries.find(e => e.id === itemId) || dynamicFrames.find(f => f.id === itemId) || dynamicThemes.find(t => t.id === itemId);
-    if (!item) return;
-    setLoading(itemId);
-    const isEquipped = inv[itemId]?.equipped;
+  /* =========================================================
+     EQUIP / UNEQUIP (Real Firebase)
+     ========================================================= */
+  const handleEquip = async (item: FirebaseItem, itemType: StoreTab) => {
+    setLoading(item.id);
+    const isEquipped = inventory[item.id]?.equipped;
+
     try {
-      if (isEquipped) {
-        await unequipItem(user.uid, itemId);
-        const updatedInv = { ...inv, [itemId]: { ...inv[itemId], equipped: false } };
-        const upd: Partial<UserProfile> = { inventory: updatedInv };
-        if (item.category === "frame") upd.equippedFrame = undefined;
-        if (item.category === "entry") upd.equippedEntry = undefined;
-        if (item.category === "theme") upd.equippedTheme = undefined;
-        onUpdate({ ...user, ...upd });
-        showToast(`${item.name} unequipped`, "info");
-      } else {
-        await equipItem(user.uid, itemId);
-        const updatedInv = { ...inv };
-        for (const [id, o] of Object.entries(updatedInv)) {
-          const si = getStoreItem(o.itemId) || dynamicEntries.find(e => e.id === o.itemId) || dynamicFrames.find(f => f.id === o.itemId) || dynamicThemes.find(t => t.id === o.itemId);
-          if (si?.category === item.category) updatedInv[id] = { ...o, equipped: false };
+      const newInventory: Record<string, InventoryItem> = { ...inventory };
+
+      if (!isEquipped) {
+        // Unequip others of same category
+        for (const [id, inv] of Object.entries(newInventory)) {
+          const otherItem =
+            frameItems.find((f) => f.id === id) ||
+            themeItems.find((t) => t.id === id) ||
+            effectItems.find((e) => e.id === id) ||
+            badgeItems.find((b) => b.id === id);
+          if (!otherItem) continue;
+
+          const isSameCategory =
+            (itemType === "frames" && frameItems.some((f) => f.id === id)) ||
+            (itemType === "themes" && themeItems.some((t) => t.id === id)) ||
+            (itemType === "effects" && effectItems.some((e) => e.id === id)) ||
+            (itemType === "badges" && badgeItems.some((b) => b.id === id));
+
+          if (isSameCategory) {
+            newInventory[id] = { ...inv, equipped: false };
+          }
         }
-        updatedInv[itemId] = { ...updatedInv[itemId], equipped: true };
-        const upd: Partial<UserProfile> = { inventory: updatedInv };
-        if (item.category === "frame") upd.equippedFrame = itemId;
-        if (item.category === "entry") upd.equippedEntry = itemId;
-        if (item.category === "theme") upd.equippedTheme = itemId;
-        onUpdate({ ...user, ...upd });
-        showToast(`${item.name} equipped! ✨`, "success");
       }
-    } catch { showToast("Failed", "error"); }
-    finally { setLoading(null); }
+
+      newInventory[item.id] = {
+        ...newInventory[item.id],
+        equipped: !isEquipped,
+      };
+
+      const updates: any = { inventory: newInventory };
+
+      const category = itemType === "frames" ? "frame" : itemType === "themes" ? "theme" : itemType === "effects" ? "entry" : "badge";
+
+      if (category === "frame") updates.equippedFrame = isEquipped ? null : item.id;
+      if (category === "entry") updates.equippedEntry = isEquipped ? null : item.id;
+      if (category === "theme") updates.equippedTheme = isEquipped ? null : item.id;
+      if (category === "badge") updates.equippedBadge = isEquipped ? null : item.id;
+
+      await update(dbRef(db, `users/${user.uid}`), updates);
+
+      onUpdate({ ...user, inventory: newInventory, ...updates } as any);
+      showToast(
+        isEquipped ? `${item.name} unequipped` : `${item.name} equipped! ✨`,
+        "success"
+      );
+    } catch (err) {
+      console.error("Equip error:", err);
+      showToast("Failed", "error");
+    } finally {
+      setLoading(null);
+    }
   };
 
-  const isLoading = (activeCategory === "entry" && entriesLoading) || (activeCategory === "frame" && framesLoading) || (activeCategory === "theme" && themesLoading);
+  /* =========================================================
+     AUTO-CLEAN EXPIRED ITEMS
+     ========================================================= */
+  useEffect(() => {
+    const now = Date.now();
+    let changed = false;
+    const newInventory: Record<string, InventoryItem> = {};
 
-  // ─── Render ────────────────────────────────────────────────
+    for (const [id, data] of Object.entries(inventory)) {
+      if (data.expiresAt && data.expiresAt < now) {
+        changed = true;
+        continue;
+      }
+      newInventory[id] = data;
+    }
+
+    if (changed) {
+      update(dbRef(db, `users/${user.uid}`), { inventory: newInventory }).catch(console.error);
+      onUpdate({ ...user, inventory: newInventory } as any);
+    }
+  }, []);
+
+  /* =========================================================
+     RENDER
+     ========================================================= */
   return (
-    <div style={{
-      background: "linear-gradient(160deg, #1A0F2E 0%, #0A0614 100%)",
-      height: "100vh", width: "100%", maxWidth: 430, margin: "0 auto",
-      display: "flex", flexDirection: "column", overflow: "hidden",
-      fontFamily: "'Inter', 'Poppins', sans-serif", color: "#fff",
-    }}>
+    <div className="store-page">
       {/* HEADER */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "52px 16px 14px",
-        background: "linear-gradient(180deg, rgba(26,15,46,0.95) 0%, transparent 100%)",
-        borderBottom: "1px solid rgba(108,92,231,0.15)",
-      }}>
-        <button onClick={onBack} style={{ background: "none", border: "none", fontSize: 22, color: "#fff", cursor: "pointer" }}>‹</button>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-          <h2 style={{ fontSize: 18, fontWeight: 900, letterSpacing: 0.5 }}>✨ Galaxy Store</h2>
-          <span style={{ fontSize: 10, color: "rgba(162,155,254,0.6)", fontWeight: 500 }}>Premium frames & effects</span>
-        </div>
-        <div style={{
-          display: "flex", alignItems: "center", gap: 5,
-          background: "rgba(255,215,0,0.08)",
-          border: "1px solid rgba(255,215,0,0.2)",
-          padding: "6px 12px", borderRadius: 20,
-        }}>
-          <span>💎</span>
-          <span style={{ fontSize: 14, fontWeight: 800, color: "#FFD700" }}>{diamonds.toLocaleString()}</span>
-        </div>
-      </div>
+      <header className="store-header">
+        <button type="button" onClick={onBack} className="store-icon-btn">
+          <ArrowLeft size={22} />
+        </button>
 
-      {/* TABS - Entry, Frames, Themes */}
-      <div style={{ display: "flex", padding: "0 16px", borderBottom: "1px solid rgba(108,92,231,0.12)" }}>
-        {(["entry", "frame", "theme"] as const).map(cat => (
-          <button key={cat} onClick={() => setActiveCategory(cat)} style={{
-            flex: 1, padding: "12px 0", border: "none", background: "transparent", cursor: "pointer",
-            fontSize: 12, fontWeight: 700,
-            color: activeCategory === cat ? "#A29BFE" : "rgba(162,155,254,0.35)",
-            borderBottom: activeCategory === cat ? "2px solid #6C5CE7" : "2px solid transparent",
-            transition: "color 0.2s",
-          }}>
-            {cat === "entry" ? "⚡ Entry FX" : cat === "frame" ? "🖼️ Frames" : "🎨 Themes"}
+        <div className="store-title-wrap">
+          <div className="store-title-icon">
+            <ShoppingBag size={22} strokeWidth={2.3} />
+          </div>
+          <h1 className="store-title">Galaxy Store</h1>
+        </div>
+
+        <button type="button" className="store-icon-btn">
+          <ShoppingBag size={22} />
+        </button>
+      </header>
+
+      {/* BALANCE */}
+      <section className="store-balance-wrap">
+        <div className="store-balance-card">
+          <div>
+            <p className="store-balance-label">Available Diamonds</p>
+            <div className="store-balance-value">
+              <Diamond size={20} fill="#7545e8" stroke="#7545e8" />
+              <span>{diamonds.toLocaleString()}</span>
+            </div>
+          </div>
+          <button type="button" className="store-recharge-btn">
+            Recharge
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      </section>
+
+      {/* SUBTITLE */}
+      <h2 className="store-subtitle">Choose your favourite assets</h2>
+
+      {/* TABS */}
+      <div className="store-tabs-wrap">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`store-tab ${activeTab === tab.id ? "active" : ""}`}
+          >
+            {tab.icon}
+            {tab.label}
           </button>
         ))}
       </div>
 
       {/* GRID */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "14px 12px 100px" }}>
-        {isLoading ? (
-          <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>
-            <div className="spinner" style={{ width: 30, height: 30, border: "3px solid rgba(255,255,255,0.1)", borderTop: "3px solid #A29BFE", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 12px" }} />
-            Loading...
+      <main className="store-grid">
+        {isLoadingCurrent ? (
+          <div className="store-loading">
+            <div className="store-spinner" />
+            <p>Loading store...</p>
+          </div>
+        ) : currentItems.length === 0 ? (
+          <div className="store-loading">
+            <div style={{ fontSize: 48 }}>🛍️</div>
+            <p>No items available</p>
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {items.map(item => {
-              const invData = inv[item.id];
-              const isExpired = invData?.expiresAt ? invData.expiresAt < Date.now() : false;
+          currentItems.map((item) => {
+            const invData = inventory[item.id];
+            const isOwned = !!invData;
+            const isEquipped = !!invData?.equipped;
+            const isExpired = invData?.expiresAt ? invData.expiresAt < Date.now() : false;
+
+            if (activeTab === "badges") {
               return (
-                <StoreCard
+                <BadgeCard
                   key={item.id}
-                  item={item}
-                  owned={!!invData}
-                  equipped={!!invData?.equipped}
+                  name={item.name}
+                  price={item.price}
+                  tag={item.tag || "NEW"}
+                  icon={BADGE_ICONS[item.iconType || "sparkles"] || BADGE_ICONS.sparkles}
+                  owned={isOwned}
+                  equipped={isEquipped}
                   expired={isExpired}
-                  userDiamonds={diamonds}
                   loading={loading === item.id}
-                  onPreview={() => setPreview(item)}
-                  onBuy={() => handleBuy(item as ExtendedStoreItem)}
-                  onEquip={() => handleEquip(item.id)}
+                  onPreview={() =>
+                    setSelectedItem({
+                      type: "badge",
+                      name: item.name,
+                      icon: BADGE_ICONS[item.iconType || "sparkles"] || BADGE_ICONS.sparkles,
+                      price: item.price,
+                    })
+                  }
+                  onBuy={() => handleBuy(item)}
+                  onEquip={() => handleEquip(item, "badges")}
                 />
               );
-            })}
-          </div>
+            }
+
+            const assetType: "frame" | "theme" | "effect" =
+              activeTab === "frames" ? "frame" :
+              activeTab === "themes" ? "theme" : "effect";
+
+            return (
+              <AssetCard
+                key={item.id}
+                image={item.imageUrl || ""}
+                name={item.name}
+                price={item.price}
+                tag={item.tag || "NEW"}
+                assetType={assetType}
+                owned={isOwned}
+                equipped={isEquipped}
+                expired={isExpired}
+                loading={loading === item.id}
+                onPreview={() =>
+                  setSelectedItem({
+                    type: assetType,
+                    name: item.name,
+                    image: item.imageUrl || "",
+                    price: item.price,
+                  })
+                }
+                onBuy={() => handleBuy(item)}
+                onEquip={() => handleEquip(item, activeTab)}
+              />
+            );
+          })
         )}
-      </div>
+      </main>
 
       {/* PREVIEW MODAL */}
-      <AnimatePresence>
-        {preview && (
-          <PreviewModal
-            item={preview}
-            owned={!!inv[preview.id]}
-            equipped={!!inv[preview.id]?.equipped}
-            expired={inv[preview.id]?.expiresAt ? inv[preview.id].expiresAt < Date.now() : false}
-            userDiamonds={diamonds}
-            loading={loading === preview.id}
-            userAvatar={user.avatar}
-            onClose={() => setPreview(null)}
-            onBuy={() => handleBuy(preview as ExtendedStoreItem)}
-            onEquip={() => handleEquip(preview.id)}
-          />
-        )}
-      </AnimatePresence>
+      {selectedItem && (
+        <PreviewModal
+          item={selectedItem}
+          userName={userName}
+          userDp={userAvatar}
+          onClose={() => setSelectedItem(null)}
+          onBuy={() => {
+            const item = currentItems.find((i) => i.name === selectedItem.name);
+            if (item) handleBuy(item);
+          }}
+        />
+      )}
+
+      {/* STYLES */}
+      <style>{`
+        .store-page {
+          width: 100%;
+          max-width: 520px;
+          margin: 0 auto;
+          background: #f4f5ff;
+          color: #29264c;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          height: 100dvh;
+          overflow-y: auto;
+          overflow-x: hidden;
+          -webkit-overflow-scrolling: touch;
+          padding-bottom: 40px;
+        }
+        .store-page * { box-sizing: border-box; }
+
+        .store-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 18px 16px;
+          background: rgba(244,245,255,0.95);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          position: sticky;
+          top: 0;
+          z-index: 40;
+          border-bottom: 1px solid rgba(255,255,255,0.8);
+        }
+        .store-icon-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 44px;
+          height: 44px;
+          border-radius: 50%;
+          background: #fff;
+          border: none;
+          cursor: pointer;
+          color: #29264c;
+          box-shadow: 0 4px 16px rgba(70,60,130,0.10);
+        }
+        .store-icon-btn:active { transform: scale(0.95); }
+        .store-title-wrap { display: flex; align-items: center; gap: 10px; }
+        .store-title-icon {
+          display: flex; align-items: center; justify-content: center;
+          width: 40px; height: 40px; border-radius: 14px;
+          background: #fff;
+          box-shadow: 0 4px 12px rgba(70,60,130,0.08);
+        }
+        .store-title { font-size: 22px; font-weight: 900; letter-spacing: -0.5px; margin: 0; }
+
+        .store-balance-wrap { padding: 16px 16px 0; }
+        .store-balance-card {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 16px 18px;
+          background: rgba(255,255,255,0.85);
+          border: 1px solid #fff;
+          border-radius: 20px;
+          box-shadow: 0 4px 14px rgba(70,60,130,0.06);
+        }
+        .store-balance-label { font-size: 12px; font-weight: 700; color: #9995b4; margin: 0 0 6px 0; }
+        .store-balance-value { display: flex; align-items: center; gap: 8px; }
+        .store-balance-value span { font-size: 22px; font-weight: 900; }
+        .store-recharge-btn {
+          display: flex; align-items: center; gap: 4px;
+          height: 40px; padding: 0 16px;
+          background: #7441e8; color: #fff;
+          border: none; border-radius: 999px;
+          font-size: 14px; font-weight: 800; cursor: pointer;
+        }
+        .store-recharge-btn:active { transform: scale(0.95); }
+
+        .store-subtitle {
+          font-size: 15px; font-weight: 700; color: #8a87a4;
+          padding: 20px 20px 12px; margin: 0;
+        }
+
+        .store-tabs-wrap {
+          display: flex; gap: 8px; overflow-x: auto;
+          padding: 0 16px 16px;
+          scrollbar-width: none;
+        }
+        .store-tabs-wrap::-webkit-scrollbar { display: none; }
+        .store-tab {
+          display: flex; align-items: center; gap: 6px;
+          flex-shrink: 0; padding: 10px 16px;
+          background: #fff; color: #77738f;
+          border: none; border-radius: 999px;
+          font-size: 13px; font-weight: 800;
+          cursor: pointer;
+          box-shadow: 0 2px 8px rgba(70,60,130,0.06);
+          transition: all 0.2s;
+        }
+        .store-tab.active {
+          background: #7441e8; color: #fff;
+          box-shadow: 0 6px 16px rgba(116,65,232,0.25);
+        }
+        .store-tab:active { transform: scale(0.97); }
+
+        .store-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+          padding: 0 16px 20px;
+        }
+        .store-loading {
+          grid-column: span 2;
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
+          padding: 60px 20px;
+          gap: 12px;
+          color: #8a87a4; font-size: 13px; font-weight: 700;
+        }
+        .store-spinner {
+          width: 32px; height: 32px;
+          border: 3px solid rgba(116,65,232,0.15);
+          border-top-color: #7441e8;
+          border-radius: 50%;
+          animation: storeSpin 0.8s linear infinite;
+        }
+        @keyframes storeSpin { to { transform: rotate(360deg); } }
+
+        .store-card {
+          background: #fff;
+          border: 1px solid #fff;
+          border-radius: 22px;
+          padding: 10px;
+          box-shadow: 0 4px 14px rgba(65,55,120,0.06);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+        .store-card-preview {
+          position: relative;
+          width: 100%;
+          aspect-ratio: 1 / 1;
+          border-radius: 16px;
+          overflow: hidden;
+          background: #f5f3ff;
+          border: none;
+          cursor: pointer;
+          padding: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .store-card-preview:active { transform: scale(0.98); }
+        .store-card-preview.theme-bg { background: #000; }
+        .store-card-preview.effect-bg { background: #090612; }
+        .store-card-preview.badge-bg {
+          background: linear-gradient(135deg, #f0eaff 0%, #ffffff 50%, #e8e1ff 100%);
+        }
+        .store-card-img {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+          padding: 8px;
+        }
+        .store-card-img.cover {
+          object-fit: cover;
+          padding: 0;
+        }
+        .store-card-tag {
+          position: absolute;
+          top: 8px;
+          left: 8px;
+          padding: 4px 10px;
+          background: #7541e8;
+          color: #fff;
+          border-radius: 999px;
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: 0.3px;
+          z-index: 2;
+        }
+        .store-card-equipped {
+          position: absolute;
+          top: 8px;
+          right: 8px;
+          padding: 3px 8px;
+          background: #00c853;
+          color: #fff;
+          border-radius: 999px;
+          font-size: 9px;
+          font-weight: 900;
+          z-index: 2;
+        }
+        .store-card-badge-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 90px;
+          height: 90px;
+          border-radius: 50%;
+          background: #fff;
+          color: #7541e8;
+          box-shadow: 0 8px 24px rgba(116,65,232,0.15);
+        }
+        .store-card-info { padding: 10px 4px 2px; }
+        .store-card-name {
+          font-size: 13px;
+          font-weight: 900;
+          color: #29264c;
+          margin: 0;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .store-card-bottom {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 6px;
+          margin-top: 8px;
+          min-width: 0;
+        }
+        .store-card-price {
+          display: flex;
+          align-items: center;
+          gap: 3px;
+          min-width: 0;
+          flex: 1;
+        }
+        .store-card-price svg { flex-shrink: 0; }
+        .store-card-price span {
+          font-size: 12px;
+          font-weight: 900;
+          color: #29264c;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .store-buy-btn {
+          flex-shrink: 0;
+          padding: 6px 12px;
+          background: #7441e8;
+          color: #fff;
+          border: none;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 900;
+          cursor: pointer;
+          box-shadow: 0 3px 10px rgba(116,65,232,0.22);
+          white-space: nowrap;
+        }
+        .store-buy-btn:active { transform: scale(0.95); }
+        .store-buy-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .store-equip-btn {
+          flex: 1;
+          padding: 6px 12px;
+          background: #7441e8;
+          color: #fff;
+          border: none;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 900;
+          cursor: pointer;
+          box-shadow: 0 3px 10px rgba(116,65,232,0.22);
+          white-space: nowrap;
+        }
+        .store-equip-btn.equipped {
+          background: #a8a0c8;
+          box-shadow: none;
+        }
+        .store-equip-btn:active { transform: scale(0.95); }
+        .store-equip-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+        .store-modal-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 99999;
+          background: rgba(0,0,0,0.5);
+          backdrop-filter: blur(4px);
+          -webkit-backdrop-filter: blur(4px);
+          display: flex;
+          align-items: flex-end;
+          justify-content: center;
+        }
+        .store-modal {
+          position: relative;
+          width: 100%;
+          max-width: 520px;
+          background: #fff;
+          border-radius: 28px 28px 0 0;
+          overflow: hidden;
+          box-shadow: 0 -10px 40px rgba(0,0,0,0.15);
+          z-index: 100000;
+          animation: storeModalIn 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+        }
+        @keyframes storeModalIn {
+          from { transform: translateY(100%); }
+          to { transform: translateY(0); }
+        }
+        .store-modal-close {
+          position: absolute;
+          top: 16px;
+          right: 16px;
+          z-index: 60;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.95);
+          border: none;
+          cursor: pointer;
+          color: #29264c;
+          box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+        }
+        .store-modal-close:active { transform: scale(0.95); }
+
+        .store-modal-preview {
+          position: relative;
+          height: 440px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+        .store-modal-preview.frame-dark {
+          background: linear-gradient(135deg, #10051f 0%, #211040 50%, #080512 100%);
+        }
+        .store-modal-preview.theme-dark { background: #000; }
+        .store-modal-preview.effect-dark { background: #080514; }
+        .store-modal-preview.badge-light {
+          background: linear-gradient(135deg, #f1eaff 0%, #fff 50%, #eee8ff 100%);
+        }
+
+        .store-modal-frame-glow {
+          position: absolute;
+          inset: 0;
+          background: radial-gradient(circle at center, rgba(132,65,255,0.28), transparent 58%);
+          pointer-events: none;
+        }
+        .store-modal-frame-wrap {
+          position: relative;
+          z-index: 10;
+          width: 280px;
+          height: 280px;
+        }
+        .store-modal-frame-avatar {
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          z-index: 1;
+          width: 60%;
+          height: 60%;
+          transform: translate(-50%, -50%);
+          border-radius: 50%;
+          object-fit: cover;
+        }
+        .store-modal-frame-img {
+          position: absolute;
+          inset: 0;
+          z-index: 2;
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+        .store-modal-frame-name {
+          position: relative;
+          z-index: 20;
+          margin-top: 16px;
+          max-width: 82%;
+          font-size: 22px;
+          font-weight: 900;
+          color: #fff;
+          text-align: center;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .store-modal-frame-subname {
+          position: relative;
+          z-index: 20;
+          margin-top: 6px;
+          font-size: 13px;
+          font-weight: 600;
+          color: rgba(255,255,255,0.6);
+        }
+        .store-modal-theme-img {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+        .store-modal-theme-overlay {
+          position: absolute;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          padding: 40px 24px 24px;
+          background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+          color: #fff;
+        }
+        .store-modal-theme-badge {
+          display: inline-block;
+          padding: 4px 12px;
+          background: rgba(255,255,255,0.2);
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 700;
+          margin-bottom: 8px;
+        }
+        .store-modal-theme-title {
+          font-size: 24px;
+          font-weight: 900;
+          margin: 0;
+        }
+        .store-modal-effect-img {
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;
+          z-index: 1;
+        }
+        .store-modal-effect-name-overlay {
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          z-index: 5;
+          width: 80%;
+          font-size: 30px;
+          font-weight: 900;
+          color: #fff;
+          text-align: center;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          text-shadow: 0 3px 15px rgba(0,0,0,0.8);
+        }
+        .store-modal-effect-label {
+          position: absolute;
+          bottom: 20px;
+          left: 0;
+          right: 0;
+          z-index: 5;
+          text-align: center;
+          font-size: 13px;
+          font-weight: 700;
+          color: rgba(255,255,255,0.8);
+        }
+        .store-modal-badge-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 140px;
+          height: 140px;
+          border-radius: 50%;
+          background: #fff;
+          color: #7541e8;
+          box-shadow: 0 16px 48px rgba(116,65,232,0.20);
+        }
+        .store-modal-badge-title {
+          margin-top: 24px;
+          font-size: 22px;
+          font-weight: 900;
+          color: #28254b;
+        }
+        .store-modal-badge-sub {
+          margin-top: 6px;
+          font-size: 13px;
+          font-weight: 600;
+          color: #9792aa;
+        }
+        .store-modal-bottom {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          padding: 18px 22px;
+          border-top: 1px solid #eeeef5;
+          background: #fff;
+        }
+        .store-modal-price-label {
+          font-size: 11px;
+          font-weight: 800;
+          color: #aaa6ba;
+          margin: 0 0 4px 0;
+        }
+        .store-modal-price {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .store-modal-price span {
+          font-size: 20px;
+          font-weight: 900;
+          color: #28254b;
+        }
+        .store-modal-buy {
+          flex: 1;
+          height: 48px;
+          background: #7441e8;
+          color: #fff;
+          border: none;
+          border-radius: 999px;
+          font-size: 15px;
+          font-weight: 900;
+          cursor: pointer;
+          box-shadow: 0 8px 22px rgba(116,65,232,0.25);
+        }
+        .store-modal-buy:active { transform: scale(0.98); }
+      `}</style>
     </div>
   );
 }
 
-/* ─────────────────────── STORE CARD ─────────────────────── */
-function StoreCard({ item, owned, equipped, expired, userDiamonds, loading, onPreview, onBuy, onEquip }: {
-  item: StoreItem; owned: boolean; equipped: boolean; expired: boolean;
-  userDiamonds: number; loading: boolean;
-  onPreview: () => void; onBuy: () => void; onEquip: () => void;
+/* =========================================================
+   ASSET CARD
+   ========================================================= */
+function AssetCard({
+  image, name, price, tag, assetType, owned, equipped, expired, loading,
+  onPreview, onBuy, onEquip,
+}: {
+  image: string;
+  name: string;
+  price: number;
+  tag: string;
+  assetType: "frame" | "theme" | "effect";
+  owned?: boolean;
+  equipped?: boolean;
+  expired?: boolean;
+  loading?: boolean;
+  onPreview: () => void;
+  onBuy: () => void;
+  onEquip?: () => void;
 }) {
-  const rarityColor = getRarityColor(item.rarity);
-  const canAfford   = userDiamonds >= item.price;
-  const isOwnedAndValid = owned && !expired;
+  const previewClass =
+    assetType === "theme" ? "theme-bg" :
+    assetType === "effect" ? "effect-bg" : "";
 
   return (
-    <div style={{
-      borderRadius: 18, overflow: "hidden",
-      background: "rgba(255,255,255,0.03)",
-      border: `1px solid ${rarityColor}28`,
-      boxShadow: equipped ? `0 0 16px ${rarityColor}40, inset 0 0 20px ${rarityColor}08` : "none",
-      display: "flex", flexDirection: "column",
-      transition: "all 0.2s",
-      opacity: expired ? 0.4 : 1,
-    }}>
-      <button onClick={onPreview} style={{
-        height: 110, border: "none", cursor: "pointer", padding: 0,
-        background: "#0a0614",
-        display: "flex", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden",
-        width: "100%",
-      }}>
-        <FramePreviewThumb item={item} />
-        <span style={{
-          position: "absolute", top: 6, right: 6,
-          fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 8,
-          background: `${rarityColor}20`, color: rarityColor, border: `1px solid ${rarityColor}40`,
-          textTransform: "uppercase", letterSpacing: 0.5,
-        }}>{RARITY_LABEL[item.rarity]}</span>
-        {equipped && (
-          <span style={{
-            position: "absolute", top: 6, left: 6,
-            fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 8,
-            background: "rgba(0,230,118,0.2)", color: "#00e676", border: "1px solid rgba(0,230,118,0.4)",
-          }}>EQUIPPED</span>
-        )}
-        {expired && (
-          <span style={{
-            position: "absolute", bottom: 6, left: 6,
-            fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 8,
-            background: "rgba(255,0,0,0.2)", color: "#ff4444", border: "1px solid rgba(255,0,0,0.4)",
-          }}>EXPIRED</span>
+    <div className="store-card">
+      <button
+        type="button"
+        onClick={onPreview}
+        className={`store-card-preview ${previewClass}`}
+      >
+        {tag && <div className="store-card-tag">{tag}</div>}
+        {equipped && <div className="store-card-equipped">✓</div>}
+
+        {image ? (
+          <img
+            src={image}
+            alt={name}
+            className={`store-card-img ${assetType === "theme" ? "cover" : ""}`}
+            onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+          />
+        ) : (
+          <div style={{ fontSize: 40, opacity: 0.3 }}>🖼️</div>
         )}
       </button>
 
-      <div style={{ padding: "10px 10px 10px" }}>
-        <p style={{ fontSize: 12, fontWeight: 800, marginBottom: 6, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</p>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
-          {isOwnedAndValid ? (
-            <button onClick={onEquip} disabled={loading} style={{
-              flex: 1, padding: "7px 0", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 800,
-              background: equipped ? "rgba(255,255,255,0.07)" : "linear-gradient(135deg,#6C5CE7,#8B7CF6)",
-              color: equipped ? "rgba(255,255,255,0.5)" : "#fff",
-              opacity: loading ? 0.6 : 1,
-            }}>
+      <div className="store-card-info">
+        <h3 className="store-card-name">{name}</h3>
+
+        <div className="store-card-bottom">
+          {owned && !expired ? (
+            <button
+              type="button"
+              onClick={onEquip}
+              disabled={loading}
+              className={`store-equip-btn ${equipped ? "equipped" : ""}`}
+            >
               {loading ? "…" : equipped ? "Unequip" : "Equip"}
             </button>
-          ) : expired ? (
-            <span style={{ fontSize: 10, color: "#ff4444", fontWeight: 700 }}>Expired</span>
           ) : (
             <>
-              <span style={{ fontSize: 11, fontWeight: 800, color: canAfford ? "#FFD700" : "rgba(255,255,255,0.3)" }}>💎 {item.price}</span>
-              <button onClick={onBuy} disabled={loading || !canAfford} style={{
-                padding: "7px 12px", borderRadius: 10, border: "none", cursor: canAfford ? "pointer" : "not-allowed",
-                background: canAfford ? "linear-gradient(135deg,#6C5CE7,#8B7CF6)" : "rgba(255,255,255,0.06)",
-                color: "#fff", fontSize: 11, fontWeight: 800, opacity: canAfford ? 1 : 0.45,
-              }}>
+              <div className="store-card-price">
+                <Diamond size={13} fill="#7441e8" stroke="#7441e8" />
+                <span>{price.toLocaleString()}</span>
+              </div>
+              <button
+                type="button"
+                onClick={onBuy}
+                className="store-buy-btn"
+                disabled={loading}
+              >
                 {loading ? "…" : "Buy"}
               </button>
             </>
@@ -499,309 +1127,147 @@ function StoreCard({ item, owned, equipped, expired, userDiamonds, loading, onPr
   );
 }
 
-/* ─────────────────────── THUMBNAIL ──────────────────────── */
-function FramePreviewThumb({ item }: { item: StoreItem }) {
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const [imageError, setImageError] = useState(false);
-
-  if (item.category === "entry") {
-    const ext = item as ExtendedStoreItem;
-    // ✅ अगर imageUrl है तो दिखाएँ, नहीं तो emoji
-    if (item.imageUrl) {
-      return (
-        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0614" }}>
-          {!imageLoaded && !imageError && (
-            <div style={{
-              width: 32, height: 32,
-              border: "3px solid rgba(255,255,255,0.1)",
-              borderTop: "3px solid #A29BFE",
-              borderRadius: "50%",
-              animation: "spin 1s linear infinite",
-            }} />
-          )}
-          {imageError && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>No preview</div>}
-          <img
-            src={item.imageUrl}
-            alt={item.name}
-            style={{
-              width: "100%", height: "100%", objectFit: "cover",
-              display: imageLoaded ? "block" : "none",
-            }}
-            onLoad={() => setImageLoaded(true)}
-            onError={() => setImageError(true)}
-          />
-        </div>
-      );
-    }
-    // Fallback to emoji + description
-    return (
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 38, filter: "drop-shadow(0 0 10px rgba(255,255,255,0.5))" }}>{item.icon}</div>
-        <div style={{ fontSize: 9, color: "rgba(255,255,255,0.6)", marginTop: 4, fontWeight: 600 }}>{ext.desc || "Entry effect"}</div>
-      </div>
-    );
-  }
-
-  if (item.category === "theme") {
-    if (item.imageUrl) {
-      return (
-        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0614" }}>
-          {!imageLoaded && !imageError && (
-            <div style={{
-              width: 32, height: 32,
-              border: "3px solid rgba(255,255,255,0.1)",
-              borderTop: "3px solid #A29BFE",
-              borderRadius: "50%",
-              animation: "spin 1s linear infinite",
-            }} />
-          )}
-          {imageError && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>No preview</div>}
-          <img
-            src={item.imageUrl}
-            alt={item.name}
-            style={{
-              width: "100%", height: "100%", objectFit: "cover",
-              display: imageLoaded ? "block" : "none",
-            }}
-            onLoad={() => setImageLoaded(true)}
-            onError={() => setImageError(true)}
-          />
-        </div>
-      );
-    }
-    return <div style={{ fontSize: 36 }}>{item.icon}</div>;
-  }
-
-  // FRAMES
-  if (item.category === "frame") {
-    if (item.imageUrl) {
-      return (
-        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0614" }}>
-          {!imageLoaded && !imageError && (
-            <div style={{
-              width: 32, height: 32,
-              border: "3px solid rgba(255,255,255,0.1)",
-              borderTop: "3px solid #A29BFE",
-              borderRadius: "50%",
-              animation: "spin 1s linear infinite",
-            }} />
-          )}
-          {imageError && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>No preview</div>}
-          <img
-            src={item.imageUrl}
-            alt={item.name}
-            style={{
-              width: "100%", height: "100%", objectFit: "cover",
-              display: imageLoaded ? "block" : "none",
-            }}
-            onLoad={() => setImageLoaded(true)}
-            onError={() => setImageError(true)}
-          />
-        </div>
-      );
-    }
-
-    if (isAnimatedFrame(item.id)) {
-      const colors = getFrameColors(item.id);
-      if (colors) {
-        return (
-          <div style={{ position: "relative" }}>
-            <div className={`af-wrapper af-${item.id.replace("frame_", "")}`} style={{ width: 64, height: 64 }}>
-              <div className="af-ring" style={{ background: `conic-gradient(${colors.primary}, ${colors.secondary}, ${colors.tertiary}, ${colors.primary})` }} />
-              <div className="af-glow" style={{ boxShadow: `0 0 10px ${colors.primary}99` }} />
-              <div className="af-img af-img-placeholder" style={{ fontSize: 22 }}>👤</div>
-            </div>
-          </div>
-        );
-      }
-    }
-    const pngPath = getPngFramePath(item.id);
-    if (pngPath) {
-      return (
-        <div style={{ position: "relative", width: 60, height: 60 }}>
-          <div style={{ position: "absolute", inset: 8, borderRadius: "50%", background: "rgba(108,92,231,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>👤</div>
-          <img src={pngPath} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }} />
-        </div>
-      );
-    }
-    return <span style={{ fontSize: 36 }}>{item.icon}</span>;
-  }
-
-  return <span style={{ fontSize: 36 }}>{item.icon}</span>;
-}
-
-/* ─────────────────────── PREVIEW MODAL ─────────────────────── */
-function PreviewModal({ item, owned, equipped, expired, userDiamonds, loading, userAvatar, onClose, onBuy, onEquip }: {
-  item: StoreItem; owned: boolean; equipped: boolean; expired: boolean;
-  userDiamonds: number; loading: boolean;
-  userAvatar: string;
-  onClose: () => void; onBuy: () => void; onEquip: () => void;
+/* =========================================================
+   BADGE CARD
+   ========================================================= */
+function BadgeCard({
+  name, price, tag, icon, owned, equipped, expired, loading,
+  onPreview, onBuy, onEquip,
+}: {
+  name: string;
+  price: number;
+  tag: string;
+  icon: ReactNode;
+  owned?: boolean;
+  equipped?: boolean;
+  expired?: boolean;
+  loading?: boolean;
+  onPreview: () => void;
+  onBuy: () => void;
+  onEquip?: () => void;
 }) {
-  const rarityColor = getRarityColor(item.rarity);
-  const canAfford   = userDiamonds >= item.price;
-  const entryMeta   = item.category === "entry" ? (item as ExtendedStoreItem) : null;
-  const [modalImageLoaded, setModalImageLoaded] = useState(false);
-  const [modalImageError, setModalImageError] = useState(false);
-
-  const isOwnedAndValid = owned && !expired;
-  const isDynamicFrame = item.category === "frame" && item.imageUrl;
-  const extendedItem = item as ExtendedStoreItem;
-
   return (
-    <>
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        onClick={onClose}
-        style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 2000, backdropFilter: "blur(4px)" }}
-      />
-      <motion.div
-        initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
-        transition={{ type: "spring", damping: 28, stiffness: 260 }}
-        style={{
-          position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 2001,
-          maxWidth: 430, margin: "0 auto",
-          background: "linear-gradient(180deg, #1A0F2E 0%, #0D0820 100%)",
-          borderTopLeftRadius: 28, borderTopRightRadius: 28,
-          borderTop: `1px solid ${rarityColor}40`,
-          padding: "20px 20px 40px",
-          boxShadow: `0 -8px 40px ${rarityColor}30`,
-        }}
+    <div className="store-card">
+      <button
+        type="button"
+        onClick={onPreview}
+        className="store-card-preview badge-bg"
       >
-        <div style={{ width: 40, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)", margin: "0 auto 20px" }} />
+        {tag && <div className="store-card-tag">{tag}</div>}
+        {equipped && <div className="store-card-equipped">✓</div>}
 
-        {/* Preview Area */}
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "center",
-          height: 180, marginBottom: 20,
-          background: item.category === "frame" && !isDynamicFrame ? "rgba(10,6,22,0.8)" : (entryMeta?.gradient || item.preview || "#0a0614"),
-          borderRadius: 20, border: `1px solid ${rarityColor}30`,
-          overflow: "hidden", position: "relative",
-        }}>
-          {[...Array(6)].map((_, i) => (
-            <div key={i} style={{
-              position: "absolute", fontSize: 14,
-              left: `${10 + i * 15}%`, top: `${10 + (i % 3) * 28}%`,
-              opacity: 0.4, animation: `fsSparkle ${1.5 + i * 0.3}s ease-in-out ${i * 0.2}s infinite alternate`,
-              pointerEvents: "none",
-            }}>✨</div>
-          ))}
-
-          {item.category === "frame" ? (
-            isDynamicFrame ? (
-              <div style={{ position: "relative", width: 90, height: 90, borderRadius: "50%", overflow: "hidden" }}>
-                <img src={userAvatar} alt="Avatar" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                <img src={item.imageUrl!} alt={item.name} style={{
-                  position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover", pointerEvents: "none",
-                }} onLoad={() => setModalImageLoaded(true)} onError={() => setModalImageError(true)} />
-                {!modalImageLoaded && !modalImageError && (
-                  <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <div style={{ width: 30, height: 30, border: "3px solid rgba(255,255,255,0.1)", borderTop: "3px solid #A29BFE", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
-                  </div>
-                )}
-                {modalImageError && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.4)" }}>No preview</div>}
-              </div>
-            ) : (
-              <AvatarFrame avatar={userAvatar} frameId={item.id} size={90} glow />
-            )
-          ) : item.category === "entry" ? (
-            // ✅ Entry: show image if available else emoji
-            <div style={{ textAlign: "center" }}>
-              {item.imageUrl ? (
-                <div style={{ width: 80, height: 80, margin: "0 auto" }}>
-                  <img
-                    src={item.imageUrl}
-                    alt={item.name}
-                    style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                    onLoad={() => setModalImageLoaded(true)}
-                    onError={() => setModalImageError(true)}
-                  />
-                  {!modalImageLoaded && !modalImageError && (
-                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <div style={{ width: 30, height: 30, border: "3px solid rgba(255,255,255,0.1)", borderTop: "3px solid #A29BFE", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={{ fontSize: 56, filter: `drop-shadow(0 0 20px ${rarityColor})`, animation: "giftBounce 1s ease-in-out infinite alternate" }}>
-                  {item.icon}
-                </div>
-              )}
-              <div style={{ marginTop: 10, fontSize: 13, color: "#fff", fontWeight: 700, textShadow: `0 0 12px ${rarityColor}` }}>
-                {entryMeta?.desc || "Entry effect"}
-              </div>
-            </div>
-          ) : (
-            // Theme
-            <div style={{ textAlign: "center" }}>
-              {item.imageUrl ? <img src={item.imageUrl} alt={item.name} style={{ width: 100, height: 100, objectFit: "contain" }} /> : <div style={{ fontSize: 48 }}>{item.icon}</div>}
-              <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.6)" }}>Room Theme</div>
-            </div>
-          )}
+        <div className="store-card-badge-icon">
+          <div style={{ transform: "scale(0.7)" }}>{icon}</div>
         </div>
+      </button>
 
-        {/* Info */}
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-            <h3 style={{ fontSize: 20, fontWeight: 900, color: "#fff", flex: 1 }}>{item.name}</h3>
-            <span style={{
-              fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 10,
-              background: `${rarityColor}18`, color: rarityColor, border: `1px solid ${rarityColor}40`,
-              textTransform: "uppercase",
-            }}>{RARITY_LABEL[item.rarity]}</span>
-          </div>
-          <p style={{ fontSize: 13, color: "rgba(162,155,254,0.6)", lineHeight: 1.5 }}>
-            {item.category === "frame" ? `Premium ${item.name} frame for your avatar. Stand out in every room.`
-              : item.category === "entry" ? `${entryMeta?.desc || "Special entry effect"} when you join a voice room.`
-              : `Beautiful ${item.name} room theme for your personal space.`}
-          </p>
-          {expired && <p style={{ fontSize: 12, color: "#ff4444", fontWeight: 700, marginTop: 4 }}>⏰ Expired – purchase again to use.</p>}
-          {isOwnedAndValid && !expired && (
-            <p style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>
-              ⏳ Valid for {extendedItem.validity ? `${extendedItem.validity} ${extendedItem.validityType}(s)` : "24 hours"} from purchase.
-            </p>
-          )}
-        </div>
+      <div className="store-card-info">
+        <h3 className="store-card-name">{name}</h3>
 
-        {/* Actions */}
-        {isOwnedAndValid ? (
-          <button onClick={onEquip} disabled={loading} style={{
-            width: "100%", padding: "16px 0", borderRadius: 20, border: "none", cursor: "pointer",
-            background: equipped ? "rgba(255,255,255,0.08)" : `linear-gradient(135deg, ${rarityColor}, #6C5CE7)`,
-            color: equipped ? "rgba(255,255,255,0.5)" : "#fff",
-            fontSize: 16, fontWeight: 800, letterSpacing: 0.5,
-            boxShadow: equipped ? "none" : `0 4px 20px ${rarityColor}50`,
-          }}>
-            {loading ? "Please wait…" : equipped ? "✓ Unequip" : "⚡ Equip Now"}
-          </button>
-        ) : (
-          <div style={{ display: "flex", gap: 12 }}>
-            <button onClick={onClose} style={{
-              flex: 1, padding: "16px 0", borderRadius: 20, border: "1px solid rgba(255,255,255,0.1)",
-              background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.6)", fontSize: 15, fontWeight: 700, cursor: "pointer",
-            }}>Cancel</button>
-            <button onClick={onBuy} disabled={loading || !canAfford || expired} style={{
-              flex: 2, padding: "16px 0", borderRadius: 20, border: "none", cursor: canAfford ? "pointer" : "not-allowed",
-              background: canAfford ? `linear-gradient(135deg, ${rarityColor}, #6C5CE7)` : "rgba(255,255,255,0.06)",
-              color: "#fff", fontSize: 15, fontWeight: 800, opacity: canAfford ? 1 : 0.5,
-              boxShadow: canAfford ? `0 4px 20px ${rarityColor}50` : "none",
-            }}>
-              {loading ? "Buying…" : `💎 ${item.price.toLocaleString()} – Buy Now`}
+        <div className="store-card-bottom">
+          {owned && !expired ? (
+            <button
+              type="button"
+              onClick={onEquip}
+              disabled={loading}
+              className={`store-equip-btn ${equipped ? "equipped" : ""}`}
+            >
+              {loading ? "…" : equipped ? "Unequip" : "Equip"}
             </button>
-          </div>
-        )}
-      </motion.div>
-    </>
+          ) : (
+            <>
+              <div className="store-card-price">
+                <Diamond size={13} fill="#7441e8" stroke="#7441e8" />
+                <span>{price.toLocaleString()}</span>
+              </div>
+              <button
+                type="button"
+                onClick={onBuy}
+                className="store-buy-btn"
+                disabled={loading}
+              >
+                {loading ? "…" : "Buy"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
-// ─── CSS keyframes ──────────────────────────────────────────
-if (!document.getElementById('store-spinner-style')) {
-  const style = document.createElement('style');
-  style.id = 'store-spinner-style';
-  style.textContent = `
-    @keyframes spin { to { transform: rotate(360deg); } }
-    @keyframes fsSparkle { 0% { opacity: 0.2; transform: scale(0.8); } 100% { opacity: 0.9; transform: scale(1.2); } }
-    @keyframes giftBounce { 0% { transform: translateY(0px); } 100% { transform: translateY(-8px); } }
-  `;
-  document.head.appendChild(style);
+/* =========================================================
+   PREVIEW MODAL
+   ========================================================= */
+function PreviewModal({
+  item, userName, userDp, onClose, onBuy,
+}: {
+  item: PreviewItem;
+  userName: string;
+  userDp: string;
+  onClose: () => void;
+  onBuy: () => void;
+}) {
+  return (
+    <div className="store-modal-overlay" onClick={onClose}>
+      <div className="store-modal" onClick={(e) => e.stopPropagation()}>
+        <button type="button" className="store-modal-close" onClick={onClose}>
+          <X size={20} />
+        </button>
+
+        {item.type === "frame" && (
+          <div className="store-modal-preview frame-dark">
+            <div className="store-modal-frame-glow" />
+            <div className="store-modal-frame-wrap">
+              <img src={userDp} alt={userName} className="store-modal-frame-avatar" />
+              <img src={item.image} alt={item.name} className="store-modal-frame-img" />
+            </div>
+            <div className="store-modal-frame-name">{truncateName(userName, 18)}</div>
+            <p className="store-modal-frame-subname">{item.name}</p>
+          </div>
+        )}
+
+        {item.type === "theme" && (
+          <div className="store-modal-preview theme-dark">
+            <img src={item.image} alt={item.name} className="store-modal-theme-img" />
+            <div className="store-modal-theme-overlay">
+              <div className="store-modal-theme-badge">Galaxy Theme</div>
+              <h2 className="store-modal-theme-title">{item.name}</h2>
+            </div>
+          </div>
+        )}
+
+        {item.type === "effect" && (
+          <div className="store-modal-preview effect-dark">
+            <img src={item.image} alt={item.name} className="store-modal-effect-img" />
+            <div className="store-modal-effect-name-overlay">{truncateName(userName, 16)}</div>
+            <div className="store-modal-effect-label">{item.name}</div>
+          </div>
+        )}
+
+        {item.type === "badge" && (
+          <div className="store-modal-preview badge-light">
+            <div className="store-modal-badge-icon">
+              <div style={{ transform: "scale(1.4)" }}>{item.icon}</div>
+            </div>
+            <h2 className="store-modal-badge-title">{item.name}</h2>
+            <p className="store-modal-badge-sub">Profile Badge</p>
+          </div>
+        )}
+
+        <div className="store-modal-bottom">
+          <div>
+            <p className="store-modal-price-label">Price</p>
+            <div className="store-modal-price">
+              <Diamond size={20} fill="#7441e8" stroke="#7441e8" />
+              <span>{item.price.toLocaleString()}</span>
+            </div>
+          </div>
+          <button type="button" onClick={onBuy} className="store-modal-buy">
+            Buy Now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

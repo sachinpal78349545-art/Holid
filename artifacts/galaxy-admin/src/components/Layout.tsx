@@ -6,7 +6,7 @@ import {
   LogOut, Menu, X, Flag, ChevronRight, Zap, Gift, Image,
   Package, Send, Crown, Trophy, Gamepad2, ClipboardList, Eye,
   Wallet, FileText, HelpCircle, BarChart, Sparkles, Heart,
-  Shield, UserCheck, Gavel, DollarSign, ListChecks, BadgeDollarSign,
+  Shield, UserCheck, Gavel, DollarSign, ListChecks, BadgeDollarSign, MessageSquareHeart,
   Settings2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -60,6 +60,7 @@ const NAV_GROUPS = [
     items: [
       { path: "/alerts", label: "Global Alerts", icon: Bell },
       { path: "/notifications", label: "Notifications", icon: Send },
+      { path: "/reward-assistant", label: "Reward Assistant", icon: MessageSquareHeart },
     ],
   },
   {

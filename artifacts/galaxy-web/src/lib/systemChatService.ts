@@ -43,47 +43,49 @@ export async function getOrCreateSystemConversation(
   if (!sysUser) throw new Error("System user not found");
 
   const convId = [userId, systemUserId].sort().join("_");
-  const convRef = ref(db, `conversations/${userId}/${convId}`);
+  const convRef = ref(db, `conversations/${convId}`);
   const snap = await get(convRef);
-  
+
   if (!snap.exists()) {
-    // नई conversation बनाएँ
+    const now = Date.now();
     const conversation = {
       id: convId,
       participants: [userId, systemUserId],
-      participantNames: { [userId]: userName || "User", [systemUserId]: sysUser.name },
-      participantAvatars: { [userId]: userAvatar || "", [systemUserId]: sysUser.avatar },
-      participantIsSystem: { [userId]: false, [systemUserId]: true },
+      participantNames: [userName || "User", sysUser.name],
+      participantAvatars: [userAvatar || "", sysUser.avatar],
+      participantIsSystem: { "0": false, "1": true },
       lastMessage: `👋 Welcome! I'm ${sysUser.name}. How can I help you?`,
-      lastTime: Date.now(),
-      unread: { [userId]: 1 },
-      createdAt: Date.now(),
+      lastMessageType: "system",
+      lastTime: now,
+      unread: { [userId]: 1, [systemUserId]: 0 },
+      createdAt: now,
     };
-    await set(convRef, conversation);
-    
-    // स्वागत संदेश भेजें (system type)
-    const msgRef = push(ref(db, `conversations/${convId}/messages`));
-    await set(msgRef, {
-      id: msgRef.key,
-      text: conversation.lastMessage,
-      senderId: systemUserId,
-      senderName: sysUser.name,
-      senderAvatar: sysUser.avatar,
-      timestamp: Date.now(),
-      type: "system",
-      readBy: { [userId]: false },
-    });
-    
-    // system user की तरफ से भी conversation बनाएँ (optional)
-    const sysConvRef = ref(db, `conversations/${systemUserId}/${convId}`);
-    await set(sysConvRef, {
-      id: convId,
-      participants: [userId, systemUserId],
-      participantNames: { [userId]: userName || "User", [systemUserId]: sysUser.name },
-      participantAvatars: { [userId]: userAvatar || "", [systemUserId]: sysUser.avatar },
-      lastMessage: conversation.lastMessage,
-      lastTime: Date.now(),
-    });
+    const msgRef = push(ref(db, `messages/${convId}`));
+    await Promise.all([
+      set(convRef, conversation),
+      set(ref(db, `userConvs/${userId}/${convId}`), true),
+      set(msgRef, {
+        id: msgRef.key,
+        text: conversation.lastMessage,
+        senderId: systemUserId,
+        senderName: sysUser.name,
+        senderDP: sysUser.avatar,
+        timestamp: now,
+        type: "system",
+        status: "delivered",
+      }),
+    ]);
+  } else {
+    // Repair older system conversations that were written outside the active chat schema.
+    await set(ref(db, `userConvs/${userId}/${convId}`), true);
+    const existing = snap.val() || {};
+    if (!Array.isArray(existing.participantNames) || !Array.isArray(existing.participantAvatars)) {
+      await update(convRef, {
+        participantNames: [userName || "User", sysUser.name],
+        participantAvatars: [userAvatar || "", sysUser.avatar],
+        participantIsSystem: { "0": false, "1": true },
+      });
+    }
   }
   return convId;
 }
@@ -100,23 +102,24 @@ export async function sendSystemMessage(userId: string, systemKey: keyof typeof 
   const sysUser = SYSTEM_USERS[systemKey];
   if (!sysUser) return;
   const convId = await getOrCreateSystemConversation(userId, sysUser.uid);
-  const convRef = ref(db, `conversations/${userId}/${convId}`);
-  const msgRef = push(ref(db, `conversations/${convId}/messages`));
+  const convRef = ref(db, `conversations/${convId}`);
+  const msgRef = push(ref(db, `messages/${convId}`));
   const msg = {
     id: msgRef.key,
     text,
     senderId: sysUser.uid,
     senderName: sysUser.name,
-    senderAvatar: sysUser.avatar,
+    senderDP: sysUser.avatar,
     timestamp: Date.now(),
     type: "system",
-    readBy: { [userId]: false },
+    status: "delivered",
   };
   await set(msgRef, msg);
   const snap = await get(convRef);
   if (snap.exists()) {
     await update(convRef, {
       lastMessage: text,
+      lastMessageType: "system",
       lastTime: msg.timestamp,
       [`unread/${userId}`]: (snap.val()?.unread?.[userId] || 0) + 1,
     });

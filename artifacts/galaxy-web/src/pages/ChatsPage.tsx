@@ -6,7 +6,7 @@ import { UserProfile, incrementStat, followUser, unfollowUser, subscribeUser, bl
 import { Conversation, ChatMessage, subscribeConversations, subscribeMessages, sendMessage, sendImageMessage, sendVoiceMessage, addReaction, setTyping, subscribeTyping, markRead, clearChat, updateLastSeen } from "../lib/chatService";
 import { sendNotification, subscribeNotifications, Notification as AppNotification, markNotificationRead, markAllNotificationsRead } from "../lib/notificationService";
 import { useToast } from "../lib/toastContext";
-import { getOrCreateSystemConversation, SYSTEM_USERS, ASSISTANT_UID } from "../lib/systemChatService";
+import { sendSystemMessage, SYSTEM_USERS } from "../lib/systemChatService";
 
 interface Props { user: UserProfile; initialChatUid?: string | null; onChatActive?: (active: boolean) => void; onNewChat?: () => void; onExploreRooms?: () => void; }
 
@@ -41,10 +41,8 @@ const NOTIF_CATEGORIES = [
 // ========== HELPER FUNCTIONS ==========
 export async function sendLevelUpReward(userId: string, newLevel: number, diamondsReward: number) {
   try {
-    const convId = await getOrCreateSystemConversation(userId, ASSISTANT_UID);
-    await sendMessage(convId, ASSISTANT_UID,
+    await sendSystemMessage(userId, "GALAXY_OFFICIAL",
       `🎉 **Congratulations!** 🎉\n\nYou've reached **Level ${newLevel}**!\n\n✨ **Reward:** ${diamondsReward} Diamonds ✨\n\nKeep growing! 🌟`,
-      "system"
     );
   } catch (err) { console.error(err); }
 }
@@ -373,12 +371,29 @@ export default function ChatsPage({ user, initialChatUid, onChatActive, onNewCha
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px 80px" }}>
           {msgs.map(msg => {
             const isSelf = msg.senderId === user.uid;
-            const isSystemMsg = msg.type === "system";
+            const isRewardMsg = msg.type === "reward" && Boolean(msg.reward);
+            const isSystemMsg = msg.type === "system" || isRewardMsg;
             if (isSystemMsg) {
+              const reward = msg.reward;
               return (
                 <div key={msg.id} style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", marginBottom: 12 }}>
-                  <div style={{ maxWidth: "75%", padding: "8px 12px", borderRadius: "18px 18px 18px 4px", background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)" }}>
-                    <span style={{ fontSize: 13, color: "#fff", whiteSpace: "pre-wrap" }}>{msg.text}</span>
+                  <div style={{ maxWidth: reward ? 310 : "75%", padding: reward ? 10 : "8px 12px", borderRadius: "18px 18px 18px 4px", background: reward ? "linear-gradient(145deg, rgba(108,92,231,0.22), rgba(28,18,58,0.92))" : "rgba(255,255,255,0.07)", border: reward ? "1px solid rgba(162,155,254,0.35)" : "1px solid rgba(255,255,255,0.1)", boxShadow: reward ? "0 8px 24px rgba(33,18,70,0.35)" : "none" }}>
+                    {reward ? (
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                          <div style={{ width: 38, height: 38, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "rgba(255,255,255,0.1)", fontSize: 22 }}>
+                            {reward.imageUrl ? <img src={reward.imageUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : reward.emoji || "🎁"}
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <p style={{ margin: 0, fontSize: 10, color: "#A29BFE", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em" }}>Reward received</p>
+                            <p style={{ margin: "3px 0 0", fontSize: 14, color: "#fff", fontWeight: 800, lineHeight: 1.2 }}>{reward.title}</p>
+                          </div>
+                        </div>
+                        {reward.amount && <p style={{ margin: "0 0 8px", fontSize: 20, color: "#7dd3fc", fontWeight: 900 }}>💎 {reward.amount.toLocaleString()}</p>}
+                        {reward.imageUrl && <img src={reward.imageUrl} alt={reward.title} style={{ display: "block", width: "100%", maxHeight: 190, objectFit: "contain", borderRadius: 10, background: "rgba(0,0,0,0.16)", marginBottom: 8 }} />}
+                        {reward.description && <p style={{ margin: 0, fontSize: 11, color: "rgba(255,255,255,0.68)", lineHeight: 1.45 }}>{reward.description}</p>}
+                      </div>
+                    ) : <span style={{ fontSize: 13, color: "#fff", whiteSpace: "pre-wrap" }}>{msg.text}</span>}
                     <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end", marginTop: 4, fontSize: 9, color: "rgba(162,155,254,0.5)" }}>
                       <span>{formatMessageTime(msg.timestamp)}</span>
                     </div>

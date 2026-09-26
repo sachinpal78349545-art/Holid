@@ -8,13 +8,25 @@ export interface ChatMessage {
   senderDP?: string;
   text: string;
   timestamp: number;
-  type?: "text" | "image" | "emoji" | "voice" | "system";
+  type?: "text" | "image" | "emoji" | "voice" | "system" | "reward";
   imageUrl?: string;
   voiceUrl?: string;
   voiceDuration?: number;
   status?: "sent" | "delivered" | "seen";
   reactions?: Record<string, string>;
   replyTo?: { id: string; text: string; senderName: string };
+  reward?: {
+    rewardId: string;
+    rewardType: "diamonds" | "gift" | "store_item" | "image";
+    title: string;
+    description?: string;
+    amount?: number;
+    emoji?: string;
+    imageUrl?: string;
+    itemId?: string;
+    itemCategory?: string;
+    rarity?: string;
+  };
 }
 
 export interface Conversation {

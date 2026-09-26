@@ -43,6 +43,7 @@ import Post from "@/pages/Post";
 import AccessRoles from "@/pages/AccessRoles";
 import StaffManagement from "@/pages/StaffManagement";
 import GameBetManagement from "@/pages/GameBetManagement";
+import RewardAssistantPage from "@/pages/RewardAssistantPage";
 
 const queryClient = new QueryClient();
 
@@ -178,6 +179,7 @@ function Router() {
       <Route path="/banners">     <Guarded><BannersPage /></Guarded></Route>
       <Route path="/packages">    <Guarded><PackagesPage /></Guarded></Route>
       <Route path="/notifications"><Guarded><NotificationsPage /></Guarded></Route>
+      <Route path="/reward-assistant"><Guarded><RewardAssistantPage /></Guarded></Route>
       <Route path="/vip">         <Guarded><VipPage /></Guarded></Route>
       <Route path="/leaderboard"> <Guarded><LeaderboardPage /></Guarded></Route>
       <Route path="/applications"><Guarded><ApplicationsPage /></Guarded></Route>
