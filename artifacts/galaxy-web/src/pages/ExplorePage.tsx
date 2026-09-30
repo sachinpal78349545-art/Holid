@@ -1,579 +1,426 @@
-import React, { useState, useEffect, useRef } from "react";
-import { ref, onValue, off, get, set, push, remove, update } from "firebase/database";
+// ExplorePage.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowUpRight,
+  ChevronDown,
+  Heart,
+  MessageCircle,
+  MoreHorizontal,
+  Plus,
+  Send,
+  Share2,
+  Video,
+  X,
+  Image as ImageIcon,
+  Globe2,
+  Users,
+  UserRound,
+  Search,
+} from "lucide-react";
+import {
+  ref as dbRef,
+  onValue,
+  off,
+  get,
+  set,
+  push,
+  remove,
+  update,
+} from "firebase/database";
 import { db, uploadWithAppCheck } from "../lib/firebase";
-import { UserProfile, isSuperAdmin } from "../lib/userService";
+import { UserProfile } from "../lib/userService";
 import { useToast } from "../lib/toastContext";
 
+type PostType = "photo" | "video";
+type Privacy = "public" | "followers" | "friends";
+
 interface Comment {
-  id: string;
-  uid: string;
-  userName: string;
-  userAvatar: string;
-  text: string;
-  createdAt: number;
+  id: string; uid: string; userName: string; userAvatar: string; text: string; createdAt: number;
 }
 
 interface Post {
-  id: string;
-  uid: string;
-  userName: string;
-  userAvatar: string;
-  text: string;
-  imageUrl?: string;
-  videoUrl?: string;
-  likes: Record<string, boolean>;
-  commentCount: number;
-  createdAt: number;
+  id: string; uid: string; type: PostType; user: string; avatar: string; time: string; createdAt: number;
+  description: string; media: string; likes: Record<string, boolean>; comments: number; following: boolean; privacy: Privacy;
 }
 
-interface Props {
-  user: UserProfile;
-  onMessage?: (uid: string) => void;
-  onNavigate?: (page: string) => void;
+interface Props { user: UserProfile; }
+
+function formatNumber(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
 }
 
-function VideoPlayer({ src }: { src: string }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [muted, setMuted] = useState(true);
-  const [playing, setPlaying] = useState(false);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || !videoRef.current) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          videoRef.current?.play().catch(() => {});
-          setPlaying(true);
-        } else {
-          videoRef.current?.pause();
-          setPlaying(false);
-        }
-      },
-      { threshold: 0.5 }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <div ref={containerRef} style={{ position: "relative", background: "#000" }}>
-      <video
-        ref={videoRef}
-        src={src}
-        muted={muted}
-        loop
-        playsInline
-        style={{ width: "100%", maxHeight: 400, objectFit: "contain", display: "block" }}
-        onClick={() => {
-          if (videoRef.current?.paused) { videoRef.current.play(); setPlaying(true); }
-          else { videoRef.current?.pause(); setPlaying(false); }
-        }}
-      />
-      <button onClick={(e) => { e.stopPropagation(); setMuted(!muted); }} style={{
-        position: "absolute", bottom: 10, right: 10, width: 32, height: 32, borderRadius: 16,
-        background: "rgba(0,0,0,0.6)", border: "none", cursor: "pointer", fontSize: 14, color: "#fff",
-        display: "flex", alignItems: "center", justifyContent: "center",
-      }}>{muted ? "\uD83D\uDD07" : "\uD83D\uDD0A"}</button>
-      {!playing && (
-        <div style={{
-          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
-          pointerEvents: "none",
-        }}>
-          <div style={{
-            width: 52, height: 52, borderRadius: 26, background: "rgba(0,0,0,0.5)",
-            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22,
-          }}>▶</div>
-        </div>
-      )}
-    </div>
-  );
+function privacyLabel(privacy: Privacy) {
+  if (privacy === "public") return "Public";
+  if (privacy === "followers") return "Followers Only";
+  return "Friends Only";
 }
 
-export default function ExplorePage({ user, onMessage: _onMessage, onNavigate }: Props) {
+function timeAgo(timestamp: number) {
+  const diff = Date.now() - timestamp;
+  if (diff < 60000) return "Just now";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+export default function ExplorePage({ user }: Props) {
+  const { showToast } = useToast();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [postText, setPostText] = useState("");
+  const [following, setFollowing] = useState<Record<string, boolean>>({});
+  const [activeFilter, setActiveFilter] = useState<"all" | "video" | "people" | "live">("all");
+
+  const [showCreatePost, setShowCreatePost] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [selectedPostType, setSelectedPostType] = useState<PostType | null>(null);
+  const [description, setDescription] = useState("");
+  const [privacy, setPrivacy] = useState<Privacy>("public");
+  const [showPrivacyMenu, setShowPrivacyMenu] = useState(false);
   const [posting, setPosting] = useState(false);
-  const [postFile, setPostFile] = useState<File | null>(null);
-  const [postFilePreview, setPostFilePreview] = useState<string | null>(null);
-  const [postFileType, setPostFileType] = useState<"image" | "video" | null>(null);
-  const [commentingPost, setCommentingPost] = useState<string | null>(null);
+
+  const [commentPostId, setCommentPostId] = useState<string | null>(null);
   const [commentText, setCommentText] = useState("");
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [sendingComment, setSendingComment] = useState(false);
-  const [editingComment, setEditingComment] = useState<string | null>(null);
-  const [editCommentText, setEditCommentText] = useState("");
-  const [reelsMode, setReelsMode] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const { showToast } = useToast();
-  const isAdmin = isSuperAdmin(user);
+  const [menuPostId, setMenuPostId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    const r = ref(db, "moments");
-    onValue(r, snap => {
-      if (!snap.exists()) { setPosts([]); setLoading(false); return; }
-      const val = snap.val();
-      const list: Post[] = Object.keys(val).map(k => ({
-        ...val[k],
-        id: k,
-        likes: val[k].likes || {},
-        commentCount: val[k].commentCount || 0,
-      }));
-      list.sort((a, b) => b.createdAt - a.createdAt);
-      const blockedList = user.blockedList || [];
-      const filtered = blockedList.length > 0 ? list.filter(p => !blockedList.includes(p.uid)) : list;
-      setPosts(filtered);
-      setLoading(false);
+    const momentsRef = dbRef(db, "moments");
+    const unsubscribe = onValue(momentsRef, (snapshot) => {
+        if (!snapshot.exists()) { setPosts([]); setLoading(false); return; }
+        const value = snapshot.val();
+        const list: Post[] = Object.keys(value).map((id) => ({
+            id, uid: value[id]?.uid || "", type: value[id]?.videoUrl ? "video" : "photo",
+            user: value[id]?.userName || "Galaxy User", avatar: value[id]?.userAvatar || "",
+            time: timeAgo(value[id]?.createdAt || Date.now()), createdAt: value[id]?.createdAt || Date.now(),
+            description: value[id]?.text || "", media: value[id]?.videoUrl || value[id]?.imageUrl || "",
+            likes: value[id]?.likes || {}, comments: Number(value[id]?.commentCount || 0),
+            following: false, privacy: value[id]?.privacy || "public",
+        }));
+        list.sort((a, b) => b.createdAt - a.createdAt);
+        const blockedList = user.blockedList || [];
+        setPosts(list.filter((p) => !blockedList.includes(p.uid)));
+        setLoading(false);
+      }, () => { setLoading(false); showToast("Unable to load posts", "error"); }
+    );
+    return () => off(momentsRef);
+  }, [user.blockedList, showToast]);
+
+  useEffect(() => {
+    if (!user.uid || !posts.length) return;
+    const uids = Array.from(new Set(posts.map((p) => p.uid).filter((uid) => uid && uid !== user.uid)));
+    if (!uids.length) return;
+    const unsubs: Array<() => void> = [];
+    uids.forEach((uid) => {
+      const followRef = dbRef(db, `follows/${user.uid}/${uid}`);
+      const unsub = onValue(followRef, (snap) => setFollowing((prev) => ({ ...prev, [uid]: snap.exists() && snap.val() === true })));
+      unsubs.push(() => off(followRef));
     });
-    return () => off(r);
-  }, []);
+    return () => unsubs.forEach((fn) => fn());
+  }, [user.uid, posts]);
 
   useEffect(() => {
-    if (!commentingPost) { setComments([]); return; }
+    if (!commentPostId) { setComments([]); return; }
     setCommentsLoading(true);
-    const r = ref(db, `momentComments/${commentingPost}`);
-    onValue(r, snap => {
-      if (!snap.exists()) { setComments([]); setCommentsLoading(false); return; }
-      const val = snap.val();
-      const list: Comment[] = Object.keys(val).map(k => ({ ...val[k], id: k }));
-      list.sort((a, b) => a.createdAt - b.createdAt);
-      const blockedList = user.blockedList || [];
-      const filteredComments = blockedList.length > 0 ? list.filter(c => !blockedList.includes(c.uid)) : list;
-      setComments(filteredComments);
-      setCommentsLoading(false);
-    });
-    return () => off(r);
-  }, [commentingPost]);
+    const commentsRef = dbRef(db, `momentComments/${commentPostId}`);
+    const unsubscribe = onValue(commentsRef, (snapshot) => {
+        if (!snapshot.exists()) { setComments([]); setCommentsLoading(false); return; }
+        const value = snapshot.val();
+        const list: Comment[] = Object.keys(value).map((id) => ({
+          id, uid: value[id]?.uid || "", userName: value[id]?.userName || "Galaxy User",
+          userAvatar: value[id]?.userAvatar || "", text: value[id]?.text || "", createdAt: Number(value[id]?.createdAt || 0),
+        }));
+        list.sort((a, b) => a.createdAt - b.createdAt);
+        setComments(list); setCommentsLoading(false);
+      }, () => { setCommentsLoading(false); showToast("Unable to load comments", "error"); }
+    );
+    return () => off(commentsRef);
+  }, [commentPostId, showToast]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const isVideo = file.type.startsWith("video/");
-    const maxSize = isVideo ? 50 * 1024 * 1024 : 5 * 1024 * 1024;
-    if (file.size > maxSize) {
-      showToast(isVideo ? "Video must be under 50MB" : "Image must be under 5MB", "warning");
-      return;
-    }
-    setPostFile(file);
-    setPostFileType(isVideo ? "video" : "image");
-    if (isVideo) {
-      setPostFilePreview(URL.createObjectURL(file));
-    } else {
-      const reader = new FileReader();
-      reader.onload = () => setPostFilePreview(reader.result as string);
-      reader.readAsDataURL(file);
-    }
+  const filteredPosts = useMemo(() => {
+    if (activeFilter === "video") return posts.filter((post) => post.type === "video");
+    if (activeFilter === "live") return [];
+    return posts;
+  }, [posts, activeFilter]);
+
+  const openCreatePost = () => { setShowCreatePost(true); setSelectedFile(null); setPreviewUrl(null); setSelectedPostType(null); setDescription(""); setPrivacy("public"); };
+  const closeCreatePost = () => { if (previewUrl) URL.revokeObjectURL(previewUrl); setShowCreatePost(false); };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]; if (!file) return;
+    const type: PostType = file.type.startsWith("video/") ? "video" : "photo";
+    const maxSize = type === "video" ? 20 * 1024 * 1024 : 5 * 1024 * 1024;
+    if (file.size > maxSize) { showToast(type === "video" ? "Video must be under 20MB" : "Image must be under 5MB", "warning"); event.target.value = ""; return; }
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setSelectedFile(file); setPreviewUrl(URL.createObjectURL(file)); setSelectedPostType(type);
   };
 
-  const handlePost = async () => {
-    if (!postFile && !postText.trim()) { showToast("Add a photo, video, or text", "warning"); return; }
+  const publishPost = async () => {
+    if (!user.uid) return showToast("You must be logged in", "warning");
+    if (!selectedFile && !description.trim()) return showToast("Add a photo, video or text", "warning");
     setPosting(true);
     try {
-      let imageUrl: string | undefined;
-      let videoUrl: string | undefined;
-      if (postFile) {
-        const ext = postFile.name.split(".").pop() || (postFileType === "video" ? "mp4" : "jpg");
-        const path = `moments/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
-        const result = await uploadWithAppCheck(postFile, path);
-        if (postFileType === "video") videoUrl = result.url;
-        else imageUrl = result.url;
+      let imageUrl = ""; let videoUrl = "";
+      if (selectedFile) {
+        const ext = selectedFile.name.split(".").pop() || (selectedPostType === "video" ? "mp4" : "jpg");
+        const path = `moments/${user.uid}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const result = await uploadWithAppCheck(selectedFile, path);
+        if (selectedPostType === "video") videoUrl = result.url; else imageUrl = result.url;
       }
-      const momentRef = push(ref(db, "moments"));
-      const data: Record<string, unknown> = {
-        uid: user.uid,
-        userName: user.name,
-        userAvatar: user.avatar,
-        text: postText.trim(),
-        likes: {},
-        commentCount: 0,
-        createdAt: Date.now(),
-      };
-      if (imageUrl) data.imageUrl = imageUrl;
-      if (videoUrl) data.videoUrl = videoUrl;
-      await set(momentRef, data);
-      setPostText("");
-      setPostFile(null);
-      setPostFilePreview(null);
-      setPostFileType(null);
-      setShowCreate(false);
-      showToast("Posted!", "success");
-    } catch (err) {
-      console.error("Post error:", err);
-      showToast("Failed to post", "error");
-    }
-    setPosting(false);
+      const momentRef = push(dbRef(db, "moments"));
+      const postData: Record<string, unknown> = { uid: user.uid, userName: user.name || "Galaxy User", userAvatar: user.avatar || "", text: description.trim(), privacy, likes: {}, commentCount: 0, createdAt: Date.now() };
+      if (imageUrl) postData.imageUrl = imageUrl;
+      if (videoUrl) postData.videoUrl = videoUrl;
+      await set(momentRef, postData);
+      closeCreatePost();
+      showToast("Post published ✨", "success");
+    } catch (err) { showToast("Failed to publish", "error"); } finally { setPosting(false); }
   };
 
-  const handleLike = async (postId: string) => {
-    const likeRef = ref(db, `moments/${postId}/likes/${user.uid}`);
-    const snap = await get(likeRef);
-    if (snap.exists()) await set(likeRef, null);
-    else await set(likeRef, true);
-  };
-
-  const handleDelete = async (postId: string) => {
+  const toggleLike = async (postId: string) => {
     try {
-      await remove(ref(db, `moments/${postId}`));
-      await remove(ref(db, `momentComments/${postId}`));
-      showToast("Post deleted", "info");
-    } catch { showToast("Delete failed", "error"); }
+      const likeRef = dbRef(db, `moments/${postId}/likes/${user.uid}`);
+      const snap = await get(likeRef);
+      if (snap.exists()) await remove(likeRef); else await set(likeRef, true);
+    } catch (err) { console.error(err); }
   };
 
-  const handleComment = async () => {
-    if (!commentingPost || !commentText.trim()) return;
+  const toggleFollow = async (targetUid: string) => {
+    if (!targetUid || targetUid === user.uid) return;
+    try {
+      const followRef = dbRef(db, `follows/${user.uid}/${targetUid}`);
+      const snap = await get(followRef);
+      if (snap.exists()) { await remove(followRef); showToast("Unfollowed", "info"); }
+      else { await set(followRef, true); showToast("Following", "success"); }
+    } catch (err) { showToast("Unable to update follow", "error"); }
+  };
+
+  const addComment = async () => {
+    if (!commentPostId || !commentText.trim() || !user.uid) return;
     setSendingComment(true);
     try {
-      const cRef = push(ref(db, `momentComments/${commentingPost}`));
-      await set(cRef, {
-        uid: user.uid,
-        userName: user.name,
-        userAvatar: user.avatar,
-        text: commentText.trim(),
-        createdAt: Date.now(),
-      });
-      await update(ref(db, `moments/${commentingPost}`), {
-        commentCount: (posts.find(p => p.id === commentingPost)?.commentCount || 0) + 1,
-      });
+      const commentRef = push(dbRef(db, `momentComments/${commentPostId}`));
+      await set(commentRef, { uid: user.uid, userName: user.name || "Galaxy User", userAvatar: user.avatar || "", text: commentText.trim(), createdAt: Date.now() });
+      const snap = await get(dbRef(db, `momentComments/${commentPostId}`));
+      await update(dbRef(db, `moments/${commentPostId}`), { commentCount: snap.exists() ? Object.keys(snap.val()).length : 0 });
       setCommentText("");
-    } catch { showToast("Failed to comment", "error"); }
-    setSendingComment(false);
+    } catch (err) { showToast("Failed to comment", "error"); } finally { setSendingComment(false); }
   };
 
-  const handleEditComment = async () => {
-    if (!commentingPost || !editingComment || !editCommentText.trim()) return;
-    setSendingComment(true);
-    try {
-      await update(ref(db, `momentComments/${commentingPost}/${editingComment}`), { text: editCommentText.trim() });
-      setEditingComment(null);
-      setEditCommentText("");
-    } catch { showToast("Failed to update comment", "error"); }
-    setSendingComment(false);
+  const sharePost = async (post: Post) => {
+    const shareText = post.description ? `${post.user}: ${post.description}` : `Check out ${post.user}'s post!`;
+    if (navigator.share) { try { await navigator.share({ title: "Galaxy", text: shareText, url: window.location.href }); return; } catch { return; } }
+    try { await navigator.clipboard.writeText(shareText); showToast("Copied", "success"); } catch { showToast("Share not supported", "info"); }
   };
-
-  const handleShare = async (post: Post) => {
-    const shareText = post.text ? `${post.userName}: ${post.text}` : `Check out ${post.userName}'s post on Galaxy!`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: "Galaxy Voice Chat", text: shareText, url: window.location.href });
-      } catch {}
-    } else {
-      try {
-        await navigator.clipboard.writeText(shareText);
-        showToast("Copied to clipboard!", "success");
-      } catch { showToast("Share not supported", "info"); }
-    }
-  };
-
-  const getTimeAgo = (ts: number) => {
-    const diff = Date.now() - ts;
-    if (diff < 60000) return "just now";
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-    return `${Math.floor(diff / 86400000)}d ago`;
-  };
-
-  const renderAvatar = (avatar: string, size = 36) => (
-    <div style={{
-      width: size, height: size, borderRadius: size / 2, fontSize: size * 0.5,
-      background: "rgba(108,92,231,0.15)", border: "2px solid rgba(108,92,231,0.3)",
-      display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0,
-    }}>
-      {avatar?.startsWith?.("http")
-        ? <img src={avatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: size / 2 }} />
-        : avatar}
-    </div>
-  );
 
   return (
-    <div className="page-scroll explore-page">
-      <div style={{ padding: "54px 16px 8px", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 900, background: "linear-gradient(135deg,#A29BFE,#6C5CE7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Explore</h1>
-          <p style={{ fontSize: 11, color: "rgba(162,155,254,0.4)", marginTop: 2 }}>Discover photos & videos from the community</p>
-        </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-          <button onClick={() => setReelsMode(!reelsMode)} style={{
-            background: reelsMode ? "rgba(191,0,255,0.2)" : "rgba(108,92,231,0.15)",
-            border: reelsMode ? "1px solid rgba(191,0,255,0.4)" : "1px solid rgba(108,92,231,0.25)",
-            borderRadius: 12, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700,
-            color: reelsMode ? "#bf00ff" : "#A29BFE", fontFamily: "inherit",
-            display: "flex", alignItems: "center", gap: 5,
-          }}>{"\uD83C\uDFAC"} Reels</button>
-          {onNavigate && (
-            <button onClick={() => onNavigate("moment")} style={{
-              background: "rgba(108,92,231,0.15)", border: "1px solid rgba(108,92,231,0.25)",
-              borderRadius: 12, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700,
-              color: "#A29BFE", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5,
-            }}>{"\uD83D\uDCF8"} Moments</button>
-          )}
-        </div>
-      </div>
+    <div className="min-h-screen bg-[#f8f8fc] text-[#171522] w-full box-border overflow-x-hidden">
+      <div className="mx-auto min-h-screen w-full max-w-[520px] bg-[#f8f8fc] relative pb-[90px]">
+        
+        {/* HEADER - Exactly like Screenshot 2 */}
+        <header className="bg-white px-5 pb-4 pt-[calc(16px+env(safe-area-inset-top))] shadow-sm w-full box-border sticky top-0 z-50">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h1 className="text-[32px] font-extrabold tracking-[-1px] text-[#171522]">Explore</h1>
+            <button
+              onClick={openCreatePost}
+              className="flex h-[46px] items-center gap-1.5 rounded-full bg-[#713cff] px-5 text-[14px] font-extrabold text-white shadow-[0_4px_14px_rgba(113,60,255,0.3)] active:scale-95 shrink-0"
+            >
+              <Plus size={18} strokeWidth={3} /> Post
+            </button>
+          </div>
 
-      {loading ? (
-        <div className="galaxy-loader">
-          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Loading" />
-          <p>Loading feed...</p>
-        </div>
-      ) : reelsMode ? (
-        (() => {
-          const videoPosts = posts.filter(p => p.videoUrl);
-          return videoPosts.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "rgba(162,155,254,0.4)" }}>
-              <p style={{ fontSize: 32, marginBottom: 8 }}>{"\uD83C\uDFAC"}</p>
-              <p style={{ fontSize: 14, fontWeight: 600 }}>No video reels yet</p>
-              <p style={{ fontSize: 12, marginTop: 4 }}>Upload a short video to start!</p>
+          <div className="flex gap-3 overflow-x-auto pb-2 -mx-5 px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {[["all", "Posts"], ["video", "Videos"], ["people", "People"], ["live", "Live"]].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setActiveFilter(id as any)}
+                className={`shrink-0 rounded-full px-6 py-2.5 text-[13px] font-bold transition ${
+                  activeFilter === id ? "bg-[#713cff] text-white shadow-md" : "bg-[#f1f0f6] text-[#6d6978]"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </header>
+
+        {/* FEED - Image will not crop now */}
+        <main className="px-4 pt-4 w-full box-border">
+          {loading ? (
+             <div className="flex flex-col items-center justify-center py-20 gap-3">
+               <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-[#713cff]/20 border-t-[#713cff]" />
+               <p className="text-sm text-[#96929f] font-semibold">Loading posts...</p>
+             </div>
+          ) : filteredPosts.length === 0 ? (
+            <div className="px-5 py-20 text-center text-[#96929f]">
+              <div className="mb-3 text-[45px]">🔎</div>
+              <p className="text-sm font-bold text-[#555]">No posts found</p>
             </div>
           ) : (
-            <div className="reels-container" style={{ height: "calc(100dvh - 160px)" }}>
-              {videoPosts.map(post => {
-                const likeCount = Object.keys(post.likes).length;
-                const isLiked = !!post.likes[user.uid];
-                return (
-                  <div key={post.id} className="reel-slide">
-                    <video src={post.videoUrl} autoPlay muted loop playsInline
-                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                      onClick={e => {
-                        const v = e.currentTarget;
-                        if (v.paused) v.play(); else v.pause();
-                      }}
-                    />
-                    <div className="reel-overlay">
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        {renderAvatar(post.userAvatar, 32)}
-                        <div>
-                          <p style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{post.userName}</p>
-                          <p style={{ fontSize: 10, color: "rgba(255,255,255,0.5)" }}>{getTimeAgo(post.createdAt)}</p>
-                        </div>
+            filteredPosts.map((post) => {
+              const liked = !!post.likes[user.uid];
+              const likeCount = Object.keys(post.likes || {}).length;
+              const isFollowing = !!following[post.uid];
+              const isMine = post.uid === user.uid;
+
+              return (
+                <article key={post.id} className="mb-5 overflow-hidden rounded-[24px] bg-white p-3.5 shadow-[0_4px_20px_rgba(35,28,60,0.05)] border border-gray-100">
+                  {/* USER */}
+                  <div className="mb-3 flex items-center gap-3">
+                    <img src={post.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(post.user)}&background=713cff&color=fff`} alt={post.user} className="h-11 w-11 shrink-0 rounded-full object-cover border border-gray-100" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[15px] font-extrabold text-[#171522]">{post.user}</span>
+                        {!isMine && (
+                          <button onClick={() => toggleFollow(post.uid)} className={`shrink-0 rounded-full px-3 py-1 text-[10px] font-extrabold ${isFollowing ? "bg-[#f0edf8] text-[#77727f]" : "bg-[#713cff] text-white"}`}>
+                            {isFollowing ? "Following" : "Follow"}
+                          </button>
+                        )}
                       </div>
-                      {post.text && <p style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", marginTop: 8, lineHeight: 1.4 }}>{post.text}</p>}
+                      <div className="mt-0.5 text-[11px] font-medium text-[#92909a]">{post.time} · {privacyLabel(post.privacy)}</div>
                     </div>
-                    <div className="reel-actions">
-                      <button className="reel-action-btn" onClick={() => handleLike(post.id)}>
-                        <span style={{ fontSize: 28, color: isLiked ? "#ff6482" : "#fff" }}>{isLiked ? "\u2764\uFE0F" : "\uD83E\uDD0D"}</span>
-                        <span>{likeCount || ""}</span>
-                      </button>
-                      <button className="reel-action-btn" onClick={() => { setCommentingPost(post.id); setCommentText(""); }}>
-                        <span style={{ fontSize: 28 }}>{"\uD83D\uDCAC"}</span>
-                        <span>{post.commentCount || ""}</span>
-                      </button>
-                      <button className="reel-action-btn" onClick={() => handleShare(post)}>
-                        <span style={{ fontSize: 28 }}>{"\uD83D\uDD17"}</span>
-                        <span>Share</span>
-                      </button>
-                      {(isAdmin || post.uid === user.uid) && (
-                        <button className="reel-action-btn" onClick={() => handleDelete(post.id)}>
-                          <span style={{ fontSize: 24, color: "#ff6482" }}>{"\uD83D\uDDD1\uFE0F"}</span>
-                        </button>
-                      )}
+                    <button onClick={() => setMenuPostId(post.id)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#77727f] hover:bg-[#f4f3f7]">
+                      <MoreHorizontal size={22} />
+                    </button>
+                  </div>
+
+                  {/* MEDIA - FIXED: object-contain aur max-h taake image poora dikhe */}
+                  <div className="relative overflow-hidden rounded-[18px] bg-[#f4f3f7] flex justify-center w-full">
+                    {post.type === "video" ? (
+                       <video src={post.media} controls playsInline className="block w-full max-h-[480px] object-contain" />
+                    ) : (
+                       <img src={post.media} alt={post.description} className="block w-full max-h-[480px] object-contain" loading="lazy" />
+                    )}
+                    {post.type === "video" && (
+                      <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-1 rounded-lg bg-black/60 px-2.5 py-1.5 text-[10px] font-bold text-white backdrop-blur-sm">
+                        <Video size={12} /> Video
+                      </div>
+                    )}
+                  </div>
+
+                  {/* DESCRIPTION */}
+                  {post.description && (
+                    <div className="px-1 pt-3.5 text-[14px] leading-[1.5] text-[#413950] font-medium">
+                      {post.description}
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })()
-      ) : posts.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "40px 0", color: "rgba(162,155,254,0.4)" }}>
-          <p style={{ fontSize: 32, marginBottom: 8 }}>{"\uD83C\uDF0C"}</p>
-          <p style={{ fontSize: 14, fontWeight: 600 }}>No posts yet</p>
-          <p style={{ fontSize: 12, marginTop: 4 }}>Be the first to share something!</p>
-        </div>
-      ) : (
-        <div style={{ padding: "0 0 0", display: "flex", flexDirection: "column", gap: 8 }}>
-          {posts.map(post => {
-            const likeCount = Object.keys(post.likes).length;
-            const isLiked = !!post.likes[user.uid];
-            return (
-              <div key={post.id} className="card" style={{ padding: 0, overflow: "hidden", borderRadius: 0, margin: 0, border: "none", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px 8px" }}>
-                  {renderAvatar(post.userAvatar, 36)}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{post.userName}</p>
-                    <p style={{ fontSize: 10, color: "rgba(162,155,254,0.4)" }}>{getTimeAgo(post.createdAt)}</p>
-                  </div>
-                  {(isAdmin || post.uid === user.uid) && (
-                    <button onClick={() => handleDelete(post.id)} style={{
-                      background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "rgba(255,100,130,0.6)", padding: 4,
-                    }}>{"\uD83D\uDDD1\uFE0F"}</button>
                   )}
-                </div>
 
-                {post.text && (
-                  <p style={{ padding: "0 14px 8px", fontSize: 13, lineHeight: 1.5, color: "rgba(255,255,255,0.85)" }}>{post.text}</p>
-                )}
+                  {/* ACTIONS */}
+                  <div className="flex items-center gap-6 px-1 pb-1 pt-4">
+                    <button onClick={() => toggleLike(post.id)} className={`flex items-center gap-1.5 text-[13px] font-bold ${liked ? "text-[#ff3f69]" : "text-[#77727f]"}`}>
+                      <Heart size={22} fill={liked ? "currentColor" : "none"} strokeWidth={2} /> {formatNumber(likeCount)}
+                    </button>
+                    <button onClick={() => setCommentPostId(post.id)} className="flex items-center gap-1.5 text-[13px] font-bold text-[#77727f]">
+                      <MessageCircle size={22} strokeWidth={2} /> {formatNumber(post.comments)}
+                    </button>
+                    <button onClick={() => sharePost(post)} className="ml-auto flex items-center gap-1.5 text-[13px] font-bold text-[#77727f]">
+                      <Share2 size={20} strokeWidth={2} /> Share
+                    </button>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </main>
+      </div>
 
-                {post.videoUrl && <VideoPlayer src={post.videoUrl} />}
-                {post.imageUrl && !post.videoUrl && (
-                  <img src={post.imageUrl} alt="" style={{ width: "100%", maxHeight: 400, objectFit: "cover", display: "block" }} />
-                )}
-
-                <div style={{ display: "flex", gap: 0, padding: "4px 6px 8px", borderTop: "1px solid rgba(255,255,255,0.03)" }}>
-                  <button onClick={() => handleLike(post.id)} style={{
-                    flex: 1, background: "none", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit",
-                    color: isLiked ? "#ff6482" : "rgba(162,155,254,0.5)", fontWeight: 600,
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0",
-                  }}>{isLiked ? "\u2764\uFE0F" : "\uD83E\uDD0D"} {likeCount || ""}</button>
-                  <button onClick={() => { setCommentingPost(post.id); setCommentText(""); }} style={{
-                    flex: 1, background: "none", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit",
-                    color: "rgba(162,155,254,0.5)", fontWeight: 600,
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0",
-                  }}>{"\uD83D\uDCAC"} {post.commentCount || ""}</button>
-                  <button onClick={() => handleShare(post)} style={{
-                    flex: 1, background: "none", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit",
-                    color: "rgba(162,155,254,0.5)", fontWeight: 600,
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 0",
-                  }}>{"\uD83D\uDD17"} Share</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div style={{ height: 80 }} />
-
-      <button onClick={() => setShowCreate(true)} style={{
-        position: "fixed", bottom: 80, right: 20, width: 56, height: 56, borderRadius: 28,
-        background: "linear-gradient(135deg, #6C5CE7, #A29BFE)", border: "none", cursor: "pointer",
-        boxShadow: "0 4px 20px rgba(108,92,231,0.5)", display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 28, color: "#fff", zIndex: 10,
-      }}>+</button>
-
-      {showCreate && (
-        <div onClick={() => { if (!posting) setShowCreate(false); }} style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200,
-          display: "flex", alignItems: "flex-end", justifyContent: "center",
-        }}>
-          <div onClick={e => e.stopPropagation()} style={{
-            width: "100%", maxWidth: 430, background: "#1A0F2E", borderRadius: "20px 20px 0 0",
-            padding: "20px 16px 32px", animation: "slide-up 0.3s ease",
-          }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-              <h3 style={{ fontSize: 18, fontWeight: 900 }}>{"\uD83C\uDF1F"} New Post</h3>
-              <button onClick={() => setShowCreate(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "rgba(162,155,254,0.5)" }}>{"\u2715"}</button>
+      {/* CREATE POST MODAL */}
+      {showCreatePost && (
+        <div className="fixed inset-0 z-[500] flex items-end justify-center bg-black/50 backdrop-blur-sm" onClick={closeCreatePost}>
+          <div className="max-h-[92vh] w-full max-w-[520px] overflow-y-auto rounded-t-[30px] bg-white px-5 pb-8 pt-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mx-auto mb-5 h-1.5 w-10 rounded-full bg-gray-200" />
+            <div className="mb-6 flex items-center justify-between">
+              <div><h2 className="text-[22px] font-extrabold text-[#171522]">Create Post</h2><p className="text-[12px] text-[#928ba2] font-medium">Share something with the world</p></div>
+              <button onClick={closeCreatePost} disabled={posting} className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f1eef7] text-[#716a83]"><X size={20} /></button>
             </div>
 
-            <textarea
-              className="input-field"
-              placeholder="What's on your mind?"
-              value={postText}
-              onChange={e => setPostText(e.target.value)}
-              rows={3}
-              disabled={posting}
-              style={{ borderRadius: 14, padding: "12px 14px", fontSize: 14, resize: "none", minHeight: 60, marginBottom: 12 }}
-            />
-
-            {postFilePreview ? (
-              <div style={{ position: "relative", marginBottom: 12 }}>
-                {postFileType === "video" ? (
-                  <video src={postFilePreview} style={{ width: "100%", maxHeight: 200, objectFit: "cover", borderRadius: 14 }} controls />
-                ) : (
-                  <img src={postFilePreview} alt="" style={{ width: "100%", maxHeight: 200, objectFit: "cover", borderRadius: 14 }} />
-                )}
-                <button onClick={() => { setPostFile(null); setPostFilePreview(null); setPostFileType(null); }} style={{
-                  position: "absolute", top: 6, right: 6, width: 28, height: 28, borderRadius: 14,
-                  background: "rgba(0,0,0,0.7)", border: "none", color: "#fff", cursor: "pointer", fontSize: 14,
-                }}>{"\u2715"}</button>
+            {!selectedFile ? (
+              <div className="grid grid-cols-2 gap-4">
+                <button onClick={() => fileInputRef.current?.click()} disabled={posting} className="flex min-h-[150px] flex-col items-center justify-center rounded-[22px] border border-dashed border-[#dcd7e8] bg-[#faf9fd] text-[#713cff] active:scale-[0.98]">
+                  <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-[16px] bg-[#eee9ff]"><ImageIcon size={26} /></div>
+                  <span className="text-[14px] font-extrabold text-[#3b3450]">Photo</span>
+                </button>
+                <button onClick={() => fileInputRef.current?.click()} disabled={posting} className="flex min-h-[150px] flex-col items-center justify-center rounded-[22px] border border-dashed border-[#dcd7e8] bg-[#faf9fd] text-[#713cff] active:scale-[0.98]">
+                  <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-[16px] bg-[#eee9ff]"><Video size={26} /></div>
+                  <span className="text-[14px] font-extrabold text-[#3b3450]">Video</span>
+                </button>
               </div>
             ) : (
-              <button onClick={() => fileRef.current?.click()} disabled={posting} style={{
-                width: "100%", padding: "24px 0", borderRadius: 14, border: "2px dashed rgba(108,92,231,0.3)",
-                background: "rgba(108,92,231,0.06)", cursor: "pointer", color: "rgba(162,155,254,0.5)",
-                fontSize: 14, fontFamily: "inherit", marginBottom: 12,
-              }}>{"\uD83D\uDCF7"} Add Photo or Video</button>
+              <>
+                <div className="relative overflow-hidden rounded-[22px] bg-[#f0eef5] flex justify-center">
+                  {selectedPostType === "video" ? <video src={previewUrl || ""} controls className="max-h-[320px] w-full object-contain" /> : <img src={previewUrl || ""} alt="Preview" className="max-h-[320px] w-full object-contain" />}
+                  <button onClick={() => { if (previewUrl) URL.revokeObjectURL(previewUrl); setSelectedFile(null); setPreviewUrl(null); setSelectedPostType(null); }} className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm"><X size={18} /></button>
+                </div>
+                <div className="mt-5">
+                  <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Write a caption..." maxLength={500} rows={3} disabled={posting} className="w-full resize-none rounded-[18px] border border-[#e7e2ef] bg-[#faf9fd] px-4 py-3 text-[14px] outline-none focus:border-[#9a72ef]" />
+                </div>
+                <button onClick={publishPost} disabled={posting} className="mt-5 flex h-[54px] w-full items-center justify-center gap-2 rounded-[18px] bg-[#713cff] text-[15px] font-extrabold text-white shadow-md active:scale-[0.98] disabled:opacity-60">
+                  {posting ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <Send size={18} />} Publish Post
+                </button>
+              </>
             )}
-
-            <input ref={fileRef} type="file" accept="image/*,video/*" style={{ display: "none" }} onChange={handleFileSelect} />
-
-            <button
-              className="btn btn-primary btn-full"
-              style={{ padding: "14px 0", borderRadius: 14, fontSize: 15, fontWeight: 800, opacity: (postText.trim() || postFile) ? 1 : 0.4 }}
-              onClick={handlePost}
-              disabled={posting || (!postText.trim() && !postFile)}
-            >{posting ? "Posting..." : "Post"}</button>
+            <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={handleFileSelect} />
           </div>
         </div>
       )}
 
-      {commentingPost && (
-        <div onClick={() => setCommentingPost(null)} style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200,
-          display: "flex", alignItems: "flex-end", justifyContent: "center",
-        }}>
-          <div onClick={e => e.stopPropagation()} style={{
-            width: "100%", maxWidth: 430, background: "#1A0F2E", borderRadius: "20px 20px 0 0",
-            padding: "16px 16px 32px", maxHeight: "70vh", display: "flex", flexDirection: "column",
-            animation: "slide-up 0.3s ease",
-          }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <h3 style={{ fontSize: 16, fontWeight: 800 }}>{"\uD83D\uDCAC"} Comments</h3>
-              <button onClick={() => setCommentingPost(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "rgba(162,155,254,0.5)" }}>{"\u2715"}</button>
+      {/* COMMENTS MODAL */}
+      {commentPostId && (
+        <div className="fixed inset-0 z-[600] flex items-end justify-center bg-black/50 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) setCommentPostId(null); }}>
+          <div className="max-h-[75vh] w-full max-w-[520px] rounded-t-[30px] bg-white px-5 pb-6 pt-4 flex flex-col">
+            <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-gray-200" />
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-[20px] font-extrabold text-[#171522]">Comments</h2>
+              <button onClick={() => setCommentPostId(null)} className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f1eef7]"><X size={18} /></button>
             </div>
-
-            <div style={{ flex: 1, overflowY: "auto", marginBottom: 12, minHeight: 100 }}>
+            <div className="flex-1 overflow-y-auto min-h-[200px] mb-4">
               {commentsLoading ? (
-                <p style={{ textAlign: "center", color: "rgba(162,155,254,0.3)", padding: 20 }}>Loading...</p>
+                 <div className="py-10 text-center text-[13px] text-[#9993a5]">Loading comments...</div>
               ) : comments.length === 0 ? (
-                <p style={{ textAlign: "center", color: "rgba(162,155,254,0.3)", padding: 20, fontSize: 13 }}>No comments yet. Be the first!</p>
+                <div className="py-10 text-center">
+                  <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-[#f2eff8]"><MessageCircle size={24} className="text-[#713cff]" /></div>
+                  <div className="text-[14px] font-bold text-[#77727f]">No comments yet</div>
+                </div>
               ) : (
-                comments.map(c => (
-                  <div key={c.id} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                    {renderAvatar(c.userAvatar, 28)}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700 }}>{c.userName}</span>
-                        <span style={{ fontSize: 9, color: "rgba(162,155,254,0.35)" }}>{getTimeAgo(c.createdAt)}</span>
+                comments.map((comment) => (
+                  <div key={comment.id} className="mb-4 flex gap-3">
+                    <img src={comment.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(comment.userName)}&background=713cff&color=fff`} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-[13px] font-extrabold text-[#171522]">{comment.userName}</span>
+                        <span className="text-[10px] font-medium text-[#9993a5]">{timeAgo(comment.createdAt)}</span>
                       </div>
-                      {editingComment === c.id ? (
-                        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                          <input className="input-field" value={editCommentText} onChange={e => setEditCommentText(e.target.value)}
-                            onKeyDown={e => { if (e.key === "Enter") handleEditComment(); if (e.key === "Escape") setEditingComment(null); }}
-                            style={{ flex: 1, borderRadius: 10, padding: "6px 10px", fontSize: 12 }} autoFocus />
-                          <button onClick={handleEditComment} disabled={sendingComment} className="btn btn-primary" style={{ borderRadius: 10, padding: "4px 10px", fontSize: 11 }}>Save</button>
-                          <button onClick={() => setEditingComment(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "rgba(162,155,254,0.4)" }}>Cancel</button>
-                        </div>
-                      ) : (
-                        <p style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginTop: 2, lineHeight: 1.4 }}>{c.text}</p>
-                      )}
+                      <div className="mt-1 text-[13px] text-[#555] leading-relaxed">{comment.text}</div>
                     </div>
-                    {(isAdmin || c.uid === user.uid) && editingComment !== c.id && (
-                      <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-                        {c.uid === user.uid && (
-                          <button onClick={() => { setEditingComment(c.id); setEditCommentText(c.text); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "rgba(162,155,254,0.5)", padding: 4 }}>{"\u270F\uFE0F"}</button>
-                        )}
-                        <button onClick={async () => {
-                          await remove(ref(db, `momentComments/${commentingPost}/${c.id}`));
-                          const post = posts.find(p => p.id === commentingPost);
-                          if (post) await update(ref(db, `moments/${commentingPost}`), { commentCount: Math.max(0, (post.commentCount || 1) - 1) });
-                        }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "rgba(255,100,130,0.5)", padding: 4 }}>{"\u2715"}</button>
-                      </div>
-                    )}
                   </div>
                 ))
               )}
             </div>
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input
-                className="input-field"
-                placeholder="Write a comment..."
-                value={commentText}
-                onChange={e => setCommentText(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleComment(); } }}
-                style={{ flex: 1, borderRadius: 20, padding: "10px 14px", fontSize: 13 }}
-                disabled={sendingComment}
-              />
-              <button
-                className="btn btn-primary"
-                onClick={handleComment}
-                disabled={!commentText.trim() || sendingComment}
-                style={{ borderRadius: 20, padding: "10px 16px", fontSize: 13, fontWeight: 700 }}
-              >{sendingComment ? "..." : "Send"}</button>
+            <div className="flex items-center gap-2 rounded-[18px] bg-[#f4f3f8] p-1.5">
+              <input value={commentText} onChange={(e) => setCommentText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addComment(); } }} placeholder="Write a comment..." disabled={sendingComment} className="min-w-0 flex-1 bg-transparent px-3 py-2 text-[13px] outline-none" />
+              <button onClick={addComment} disabled={sendingComment || !commentText.trim()} className="flex h-9 w-9 items-center justify-center rounded-[14px] bg-[#713cff] text-white disabled:opacity-50"><ArrowUpRight size={18} /></button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MORE MENU */}
+      {menuPostId && (
+        <div className="fixed inset-0 z-[700] flex items-end justify-center bg-black/50 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) setMenuPostId(null); }}>
+          <div className="w-full max-w-[520px] rounded-t-[30px] bg-white px-5 pb-6 pt-4">
+            <div className="mx-auto mb-5 h-1.5 w-10 rounded-full bg-gray-200" />
+            <button onClick={() => { setMenuPostId(null); showToast("Copied", "success"); }} className="w-full border-b border-gray-100 py-4 text-left text-[15px] font-bold text-[#3b3546]">🔗 Copy Link</button>
+            <button onClick={() => { setMenuPostId(null); showToast("Hidden", "info"); }} className="w-full border-b border-gray-100 py-4 text-left text-[15px] font-bold text-[#3b3546]">🚫 Not Interested</button>
+            <button onClick={() => { setMenuPostId(null); showToast("Reported", "success"); }} className="w-full border-b border-gray-100 py-4 text-left text-[15px] font-bold text-[#3b3546]">🚩 Report Post</button>
+            {menuPostId && posts.find((p) => p.id === menuPostId)?.uid === user.uid && (
+               <button onClick={async () => { await remove(dbRef(db, `moments/${menuPostId}`)); setMenuPostId(null); }} className="w-full border-b border-gray-100 py-4 text-left text-[15px] font-bold text-[#ff4757]">🗑️ Delete Post</button>
+            )}
+            <button onClick={() => setMenuPostId(null)} className="w-full py-4 text-center text-[15px] font-extrabold text-[#713cff]">Cancel</button>
           </div>
         </div>
       )}
