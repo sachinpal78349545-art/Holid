@@ -1,7 +1,7 @@
 // ProfilePage.tsx – Full version without old daily tasks, bottom sheet (task page code separated)
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { signOut } from "firebase/auth";
-import { auth, db, storage } from "../lib/firebase";
+import { auth, db } from "../lib/firebase";
 import {
   Backpack,
   ChevronRight,
@@ -19,17 +19,15 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import { UserProfile, claimDailyReward, getAchievementsList, blockUser, unblockUser, getUser, reportUser, subscribeFriendRequests, respondFriendRequest, FriendRequest, sendFriendRequest, removeFriend, searchUsers, isSuperAdmin, setOfficialRole, removeOfficialRole, getUserByUserId, ensureSuperAdmin, followUser, banUser, unbanUser, isUserBanned, setUserCoins, deleteUserAvatar, resetUserName, deviceBanUser, shadowBanUser, removeShadowBan } from "../lib/userService";
+import { UserProfile, claimDailyReward, blockUser, unblockUser, getUser, subscribeFriendRequests, respondFriendRequest, FriendRequest, sendFriendRequest, removeFriend, searchUsers, isSuperAdmin, setOfficialRole, removeOfficialRole, getUserByUserId, ensureSuperAdmin, followUser, banUser, unbanUser, isUserBanned, setUserCoins, deleteUserAvatar, resetUserName, deviceBanUser, shadowBanUser, removeShadowBan } from "../lib/userService";
 import { sendGlobalAlert, clearGlobalAlerts } from "../lib/notificationService";
 import { updateRoomSettings, setRoomSeatCount, wipeDummyRooms, setAutoEntryRoom, getAutoEntryRoom, ensureOfficialRoom, ROOM_THEMES } from "../lib/roomService";
-import { submitFeedback, HELP_ARTICLES } from "../lib/supportService";
+import { HELP_ARTICLES } from "../lib/supportService";
 import { getOrCreateConversation } from "../lib/chatService";
 import { useToast } from "../lib/toastContext";
-import { getStoreItem, equipItem, unequipItem, getRarityColor, isPngFrame, getPngFramePath, isAnimatedFrame } from "../lib/storeService";
 import TasksPanel from "../components/TasksPanel";
 import RankingBoardPage from "../components/home/RankingBoardPage";
 import SuperAdminAvatar from "../components/SuperAdminAvatar";
-import { FramePreview } from "../components/frames/FrameAvatar";
 import FantasyFrame from "../components/frames/FantasyFrame";
 import OfficialBadge from "../components/OfficialBadge";
 import { Language, LANGUAGE_OPTIONS, getCurrentLanguage, setLanguage } from "../lib/i18n";
@@ -39,6 +37,11 @@ import SettingsPage from "./SettingsPage";
 import UserLevelPage from "./UserLevelPage";
 import StorePage from "./StorePage";
 import HostAgencyApply from "../components/HostAgencyApply";
+import AchievementsPage from "./profile/AchievementsPage";
+import BackpackPage from "./profile/BackpackPage";
+import ReportPage from "./profile/ReportPage";
+import FeedbackPage from "./profile/FeedbackPage";
+import PrivacyPolicyPage from "./profile/PrivacyPolicyPage";
 
 interface Props {
   user: UserProfile;
@@ -111,21 +114,12 @@ export default function ProfilePage({
   const [showHelp, setShowHelp] = useState(false);
   const [showHelpArticle, setShowHelpArticle] = useState<string | null>(null);
   const [showBackpack, setShowBackpack] = useState(false);
-  const [_storeCategory, setStoreCategory] = useState<"frame" | "entry" | "theme">("frame");
-  const [storeLoading, setStoreLoading] = useState<string | null>(null);
-  const [backpackCategory, setBackpackCategory] = useState<"frame" | "entry" | "theme">("frame");
+  const [storeCategory, setStoreCategory] = useState<"frame" | "entry" | "theme">("frame");
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showOfficialRules, setShowOfficialRules] = useState(false);
   const [adminPromoteId, setAdminPromoteId] = useState("");
   const [adminLookupResult, setAdminLookupResult] = useState<UserProfile | null>(null);
   const [adminLoading, setAdminLoading] = useState(false);
-  const [feedbackType, setFeedbackType] = useState<"feedback" | "bug" | "suggestion">("feedback");
-  const [feedbackMessage, setFeedbackMessage] = useState("");
-  const [feedbackSending, setFeedbackSending] = useState(false);
-  const [feedbackCategory, setFeedbackCategory] = useState("");
-  const [feedbackAttachments, setFeedbackAttachments] = useState<File[]>([]);
-  const [showFeedbackAttachPicker, setShowFeedbackAttachPicker] = useState(false);
-  const [showReportAttachPicker, setShowReportAttachPicker] = useState(false);
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
   const [friendProfiles, setFriendProfiles] = useState<UserProfile[]>([]);
   const [blockedProfiles, setBlockedProfiles] = useState<UserProfile[]>([]);
@@ -136,12 +130,6 @@ export default function ProfilePage({
   const [followerLoading, setFollowerLoading] = useState(false);
   const [followingLoading, setFollowingLoading] = useState(false);
   const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
-  const [reportReason, setReportReason] = useState("");
-  const [reportDetails, setReportDetails] = useState("");
-  const [reportTarget, setReportTarget] = useState("");
-  const [reportAttachment, setReportAttachment] = useState<File | null>(null);
-  const [reportAttachments, setReportAttachments] = useState<File[]>([]);
-  const [reportUploading, setReportUploading] = useState(false);
   const [showBanMenu, setShowBanMenu] = useState(false);
   const [banLoading, setBanLoading] = useState(false);
   const [walletEditId, setWalletEditId] = useState("");
@@ -232,8 +220,6 @@ export default function ProfilePage({
   }, [showStorePage, onOpenSubPage, onCloseSubPage]);
 
   // ---------- ALL HOOKS AND FUNCTIONS ----------
-  const achievements = useMemo(() => getAchievementsList(user), [user]);
-  const unlockedCount = useMemo(() => achievements.filter((a) => a.unlocked).length, [achievements]);
   const openSubPage = useCallback((id: string) => onOpenSubPage?.(id), [onOpenSubPage]);
   const closeSubPage = useCallback(() => onCloseSubPage?.(), [onCloseSubPage]);
 
@@ -379,64 +365,6 @@ export default function ProfilePage({
     showToast("Friend removed", "info");
   };
 
-  // ---------- Unified Report & Feedback ----------
-  const handleReport = async (isFeedback: boolean = false) => {
-    const reason = isFeedback ? feedbackCategory : reportReason;
-    const details = isFeedback ? feedbackMessage : reportDetails;
-    const target = isFeedback ? "feedback" : (reportTarget || "general");
-
-    if (!reason) {
-      showToast(isFeedback ? "Please select a category" : "Please select a reason", "warning");
-      return;
-    }
-    if (!details?.trim()) {
-      showToast(isFeedback ? "Please describe your feedback" : "Please describe the issue", "warning");
-      return;
-    }
-
-    setReportUploading(true);
-    let attachmentUrl = "";
-    const attachments = isFeedback ? feedbackAttachments : reportAttachments;
-    const primaryAttachment = attachments[0] || reportAttachment;
-    if (primaryAttachment) {
-      if (primaryAttachment.size > 20 * 1024 * 1024) {
-        showToast("Size of a single video cannot exceed 20 MB", "warning");
-        setReportUploading(false);
-        return;
-      }
-      try {
-        const fileRef = storage.ref(`reports/${user.uid}/${Date.now()}_${primaryAttachment.name}`);
-        await fileRef.uploadBytes(primaryAttachment);
-        attachmentUrl = await fileRef.getDownloadURL();
-      } catch {
-        showToast("Failed to upload attachment", "error");
-        setReportUploading(false);
-        return;
-      }
-    }
-    try {
-      await reportUser(user.uid, target, reason, details, attachmentUrl);
-      showToast("Thank you for your report/feedback!", "success");
-      if (isFeedback) {
-        setShowFeedback(false);
-        setFeedbackCategory("");
-        setFeedbackMessage("");
-        setFeedbackAttachments([]);
-      } else {
-        setShowReport(false);
-        setReportReason("");
-        setReportDetails("");
-        setReportTarget("");
-        setReportAttachment(null);
-        setReportAttachments([]);
-      }
-      closeSubPage();
-    } catch {
-      showToast("Failed to submit. Try again.", "error");
-    }
-    setReportUploading(false);
-  };
-
   // ---------- Search ----------
   const handleSearch = async () => {
     if (searchQuery.trim().length < 2) return;
@@ -493,49 +421,6 @@ export default function ProfilePage({
     setAdminLoading(false);
   };
 
-  // ---------- Backpack / Store ----------
-  const handleEquip = async (itemId: string) => {
-    setStoreLoading(itemId);
-    try {
-      await equipItem(user.uid, itemId);
-      const item = getStoreItem(itemId);
-      const updatedInv = { ...(user.inventory || {}) };
-      for (const [k, v] of Object.entries(updatedInv)) {
-        const si = getStoreItem(v.itemId);
-        if (si && item && si.category === item.category) updatedInv[k] = { ...v, equipped: false };
-      }
-      if (updatedInv[itemId]) updatedInv[itemId] = { ...updatedInv[itemId], equipped: true };
-      const updates: Partial<typeof user> = { inventory: updatedInv };
-      if (item?.category === "frame") updates.equippedFrame = itemId;
-      if (item?.category === "entry") updates.equippedEntry = itemId;
-      if (item?.category === "theme") updates.equippedTheme = itemId;
-      onUpdate({ ...user, ...updates });
-      showToast(`${item?.name || "Item"} equipped!`, "success");
-    } catch {
-      showToast("Equip failed", "error");
-    }
-    setStoreLoading(null);
-  };
-
-  const handleUnequip = async (itemId: string) => {
-    setStoreLoading(itemId);
-    try {
-      await unequipItem(user.uid, itemId);
-      const item = getStoreItem(itemId);
-      const updatedInv = { ...(user.inventory || {}) };
-      if (updatedInv[itemId]) updatedInv[itemId] = { ...updatedInv[itemId], equipped: false };
-      const updates: Partial<typeof user> = { inventory: updatedInv };
-      if (item?.category === "frame") updates.equippedFrame = undefined;
-      if (item?.category === "entry") updates.equippedEntry = undefined;
-      if (item?.category === "theme") updates.equippedTheme = undefined;
-      onUpdate({ ...user, ...updates });
-      showToast("Item unequipped", "info");
-    } catch {
-      showToast("Unequip failed", "error");
-    }
-    setStoreLoading(null);
-  };
-
   // ---------- Menu Actions ----------
   const handleMenu = (action: string) => {
     if (action === "edit") onEditProfile();
@@ -573,7 +458,6 @@ export default function ProfilePage({
     if (action === "backpack") {
       openSubPage("backpack");
       setShowBackpack(true);
-      setBackpackCategory("frame");
     }
     if (action === "report") {
       openSubPage("report");
@@ -834,140 +718,23 @@ export default function ProfilePage({
         />
       )}
 
-      {/* ===== ACHIEVEMENTS ===== */}
       {showAchievements && (
-        <BottomSheet
+        <AchievementsPage
+          user={user}
           onClose={() => {
             closeSubPage();
             setShowAchievements(false);
           }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexShrink: 0 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 900 }}>🏆 Achievements ({unlockedCount}/{achievements.length})</h2>
-            <button
-              onClick={() => {
-                closeSubPage();
-                setShowAchievements(false);
-              }}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                fontSize: 20,
-                color: "rgba(162,155,254,0.5)",
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
-            {achievements.map((a) => (
-              <div
-                key={a.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "12px 14px",
-                  background: a.unlocked ? "rgba(108,92,231,0.1)" : "rgba(255,255,255,0.02)",
-                  border: `1px solid ${a.unlocked ? "rgba(108,92,231,0.3)" : "rgba(255,255,255,0.06)"}`,
-                  borderRadius: 14,
-                  opacity: a.unlocked ? 1 : 0.5,
-                }}
-              >
-                <span style={{ fontSize: 28, filter: a.unlocked ? "none" : "grayscale(1)" }}>{a.icon}</span>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: 14, fontWeight: 700, color: a.unlocked ? "#fff" : "rgba(255,255,255,0.5)" }}>
-                    {a.title}
-                  </p>
-                  <p style={{ fontSize: 11, color: "rgba(162,155,254,0.4)" }}>{a.description}</p>
-                </div>
-                {a.unlocked && <span style={{ fontSize: 20 }}>✅</span>}
-              </div>
-            ))}
-          </div>
-        </BottomSheet>
+        />
       )}
 
-      {/* ===== PRIVACY POLICY ===== */}
       {showPrivacyPolicy && (
-        <BottomSheet
+        <PrivacyPolicyPage
           onClose={() => {
             closeSubPage();
             setShowPrivacyPolicy(false);
           }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexShrink: 0 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 900, color: "#00ffff" }}>📜 Privacy Policy</h2>
-            <button
-              onClick={() => {
-                closeSubPage();
-                setShowPrivacyPolicy(false);
-              }}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                fontSize: 20,
-                color: "rgba(162,155,254,0.5)",
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          <div style={{ flex: 1, overflowY: "auto", padding: "4px 0 20px 0" }}>
-            <p style={{ fontSize: 11, color: "rgba(0,255,255,0.5)", marginBottom: 12 }}>
-              Effective Date: May 15, 2026<br />
-              Developed by: Galaxy Development Team
-            </p>
-            <p style={{ fontSize: 13, fontWeight: 700, color: "#FFD700", marginTop: 8, marginBottom: 4 }}>
-              1. Information We Collect
-            </p>
-            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 12 }}>
-              To provide a seamless and secure social experience, we collect the following information:<br />
-              • Account Information: Your mobile number and password provided during registration to secure your identity.<br />
-              • User Profile: Details such as your display name, avatar, gender, and date of birth.<br />
-              • Activity Data: Metadata regarding your interactions, such as which voice rooms you join and the duration of your stay. We do not monitor or record private voice conversations.<br />
-              • Technical Data: For security and anti-spam purposes, we collect device identifiers (Android ID/IMEI), IP addresses, and operating system versions.
-            </p>
-            <p style={{ fontSize: 13, fontWeight: 700, color: "#FFD700", marginBottom: 4 }}>
-              2. Permissions & Features
-            </p>
-            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 12 }}>
-              The App requires the following system permissions to function:<br />
-              • Microphone Access: To enable real-time voice chat within rooms via the integrated SDK.<br />
-              • Storage/Photo Library: To allow you to upload profile pictures and share media within the community.<br />
-              • Push Notifications: To send alerts regarding room invitations, virtual gifts, and system updates.
-            </p>
-            <p style={{ fontSize: 13, fontWeight: 700, color: "#FFD700", marginBottom: 4 }}>
-              3. Data Usage & Security
-            </p>
-            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 12 }}>
-              • Service Optimization: We use your data to manage your account level (XP), VIP status, and digital badges.<br />
-              • Security Measures: We utilize secure, encrypted servers to ensure your personal information is protected against unauthorized access.<br />
-              • Third-Party Services: We use high-quality voice streaming SDKs that operate under their own strict privacy standards to ensure data integrity.
-            </p>
-            <p style={{ fontSize: 13, fontWeight: 700, color: "#FFD700", marginBottom: 4 }}>
-              4. Safety & Age Restriction
-            </p>
-            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 12 }}>
-              Galaxy Voice Chat is strictly for individuals aged 18 and older. We do not knowingly permit minors to use the platform. If we discover that a user is under the age of 18, their account will be terminated immediately.
-            </p>
-            <p style={{ fontSize: 13, fontWeight: 700, color: "#FFD700", marginBottom: 4 }}>
-              5. Account Deletion
-            </p>
-            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 12 }}>
-              Users may request to delete their account at any time through the App settings. Please ensure that all virtual balances (diamonds) are cleared before deletion, as this data cannot be recovered once the account is removed.
-            </p>
-            <p style={{ fontSize: 13, fontWeight: 700, color: "#FFD700", marginBottom: 4 }}>
-              6. Contact Support
-            </p>
-            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
-              If you have any questions, technical issues, or wish to appeal an account ban, please contact our official support team at:<br />
-              📧 <span style={{ color: "#00ffff" }}>galaxyvoicechat.support@gmail.com</span>
-            </p>
-          </div>
-        </BottomSheet>
+        />
       )}
 
       {/* ===== FRIEND REQUESTS ===== */}
@@ -2221,221 +1988,14 @@ export default function ProfilePage({
         </BottomSheet>
       )}
 
-      {/* ===== REPORT ===== */}
       {showReport && (
-        <BottomSheet
+        <ReportPage
+          user={user}
           onClose={() => {
             closeSubPage();
             setShowReport(false);
-            setReportAttachment(null);
-            setReportAttachments([]);
           }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexShrink: 0 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 900 }}>⚠️ Report Issue</h2>
-            <button
-              onClick={() => { closeSubPage(); setShowReport(false); setReportAttachment(null); setReportAttachments([]); }}
-              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "rgba(162,155,254,0.5)" }}
-            >✕</button>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <input
-              className="input-field"
-              placeholder="User ID (optional)"
-              value={reportTarget}
-              onChange={(e) => setReportTarget(e.target.value)}
-              style={{ borderRadius: 14, padding: "12px 14px" }}
-            />
-
-            <div>
-              <p style={{ fontSize: 12, fontWeight: 700, color: "rgba(162,155,254,0.6)", margin: "0 0 8px 0" }}>Select Reason</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {["Underage", "Abuse", "Spam", "Illegal", "App issues", "Room violations", "Violence", "Other"].map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => setReportReason(r)}
-                    style={{
-                      padding: "8px 14px", borderRadius: 20, border: "none", cursor: "pointer", fontFamily: "inherit",
-                      background: reportReason === r ? "rgba(255,70,110,0.25)" : "rgba(255,255,255,0.04)",
-                      color: reportReason === r ? "#ff6482" : "rgba(162,155,254,0.5)",
-                      fontSize: 12, fontWeight: 600,
-                      boxShadow: reportReason === r ? "0 0 8px rgba(255,100,130,0.3)" : "none",
-                      transition: "all 0.2s",
-                    }}
-                  >{r}</button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p style={{ fontSize: 12, fontWeight: 700, color: "rgba(162,155,254,0.6)", margin: "0 0 6px 0" }}>Details</p>
-              <div style={{ position: "relative" }}>
-                <textarea
-                  className="input-field"
-                  placeholder="Describe the issue you are experiencing..."
-                  value={reportDetails}
-                  onChange={(e) => { if (e.target.value.length <= 200) setReportDetails(e.target.value); }}
-                  rows={3}
-                  style={{ borderRadius: 14, padding: "12px 14px 28px 14px", resize: "none", fontFamily: "inherit", width: "100%", boxSizing: "border-box" }}
-                />
-                <span style={{
-                  position: "absolute", bottom: 8, right: 12, fontSize: 11, pointerEvents: "none",
-                  color: reportDetails.length >= 180 ? "#f43f5e" : "rgba(162,155,254,0.4)",
-                }}>{reportDetails.length}/200</span>
-              </div>
-            </div>
-
-            <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <p style={{ fontSize: 12, fontWeight: 700, color: "rgba(162,155,254,0.6)", margin: 0 }}>Evidence (Optional)</p>
-                <span style={{ fontSize: 11, color: "rgba(162,155,254,0.4)" }}>{reportAttachments.length}/3</span>
-              </div>
-              {reportAttachments.length > 0 && (
-                <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                  {reportAttachments.map((file, i) => (
-                    <div key={i} style={{ position: "relative" }}>
-                      <div style={{
-                        width: 60, height: 60, borderRadius: 10,
-                        background: "rgba(255,70,110,0.1)", border: "1px solid rgba(255,100,130,0.2)",
-                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                        fontSize: 20, gap: 2,
-                      }}>
-                        <span>{file.type.startsWith("image/") ? "🖼️" : "🎬"}</span>
-                        <span style={{ fontSize: 9, color: "rgba(255,100,130,0.6)" }}>
-                          {(file.size / 1024 / 1024).toFixed(1)}MB
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => setReportAttachments(prev => prev.filter((_, j) => j !== i))}
-                        style={{
-                          position: "absolute", top: -6, right: -6, width: 18, height: 18,
-                          background: "#ff4757", border: "none", borderRadius: "50%", color: "#fff",
-                          cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center",
-                          justifyContent: "center", padding: 0,
-                        }}
-                      >✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {reportAttachments.length < 3 && (
-                <button
-                  onClick={() => setShowReportAttachPicker(true)}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "13px 16px",
-                    background: "rgba(255,255,255,0.04)", border: "1.5px dashed rgba(255,100,130,0.28)",
-                    borderRadius: 14, cursor: "pointer", width: "100%", fontFamily: "inherit",
-                  }}
-                >
-                  <span style={{ fontSize: 20 }}>📎</span>
-                  <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "rgba(162,155,254,0.5)", textAlign: "left" }}>
-                    Add evidence · Max 3 photos OR 1 video + 2 photos
-                  </span>
-                  <span style={{ fontSize: 22, color: "rgba(255,100,130,0.35)", fontWeight: 300, lineHeight: 1 }}>+</span>
-                </button>
-              )}
-            </div>
-
-            {showReportAttachPicker && (
-              <div
-                style={{ position: "fixed", inset: 0, zIndex: 6000, background: "rgba(0,0,0,0.72)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }}
-                onClick={() => setShowReportAttachPicker(false)}
-              >
-                <div
-                  style={{
-                    background: "linear-gradient(180deg,#1e0f1e,#0d0926)",
-                    borderRadius: "24px 24px 0 0", padding: "20px 16px 40px",
-                    border: "1px solid rgba(255,100,130,0.12)", maxWidth: 400, width: "100%", margin: "0 auto",
-                  }}
-                  onClick={e => e.stopPropagation()}
-                >
-                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
-                    <div style={{ width: 40, height: 4, borderRadius: 2, background: "rgba(255,100,130,0.3)" }} />
-                  </div>
-                  <p style={{ textAlign: "center", fontSize: 15, fontWeight: 800, color: "#fff", margin: "0 0 18px 0" }}>Add Evidence</p>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    <label style={{
-                      display: "flex", alignItems: "center", gap: 14, padding: "15px 18px",
-                      background: "rgba(255,70,110,0.08)", border: "1px solid rgba(255,100,130,0.2)",
-                      borderRadius: 16, cursor: "pointer",
-                    }}>
-                      <span style={{ fontSize: 26 }}>📷</span>
-                      <div style={{ flex: 1 }}>
-                        <p style={{ margin: "0 0 2px", fontWeight: 700, fontSize: 15, color: "#fff" }}>Picture</p>
-                        <p style={{ margin: 0, fontSize: 12, color: "rgba(162,155,254,0.5)" }}>Select photos from gallery</p>
-                      </div>
-                      <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                        onChange={(e) => {
-                          setShowReportAttachPicker(false);
-                          const files = Array.from(e.target.files || []);
-                          const photoCount = reportAttachments.filter(f => f.type.startsWith("image/")).length;
-                          const videoCount = reportAttachments.filter(f => f.type.startsWith("video/")).length;
-                          const toAdd: File[] = [];
-                          for (const f of files) {
-                            const curPhoto = photoCount + toAdd.length;
-                            const canAdd = videoCount === 0 ? curPhoto < 3 : curPhoto < 2;
-                            if (!canAdd) { showToast("Select up to 3 items: Max 3 photos OR 1 video + 2 photos", "warning"); break; }
-                            toAdd.push(f);
-                          }
-                          if (toAdd.length) setReportAttachments(prev => [...prev, ...toAdd]);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <label style={{
-                      display: "flex", alignItems: "center", gap: 14, padding: "15px 18px",
-                      background: "rgba(255,70,110,0.08)", border: "1px solid rgba(255,100,130,0.2)",
-                      borderRadius: 16, cursor: "pointer",
-                    }}>
-                      <span style={{ fontSize: 26 }}>🎬</span>
-                      <div style={{ flex: 1 }}>
-                        <p style={{ margin: "0 0 2px", fontWeight: 700, fontSize: 15, color: "#fff" }}>Video</p>
-                        <p style={{ margin: 0, fontSize: 12, color: "rgba(162,155,254,0.5)" }}>Max 20MB · 1 video per submission</p>
-                      </div>
-                      <input type="file" accept="video/*" style={{ display: "none" }}
-                        onChange={(e) => {
-                          setShowReportAttachPicker(false);
-                          const f = e.target.files?.[0];
-                          if (!f) return;
-                          if (f.size > 20 * 1024 * 1024) { showToast("Size of a single video cannot exceed 20 MB", "warning"); e.target.value = ""; return; }
-                          const videoCount = reportAttachments.filter(x => x.type.startsWith("video/")).length;
-                          const photoCount = reportAttachments.filter(x => x.type.startsWith("image/")).length;
-                          if (videoCount >= 1 || photoCount > 2) { showToast("Select up to 3 items: Max 3 photos OR 1 video + 2 photos", "warning"); e.target.value = ""; return; }
-                          setReportAttachments(prev => [...prev, f]);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <button
-                      onClick={() => setShowReportAttachPicker(false)}
-                      style={{
-                        padding: "15px 0", borderRadius: 16, border: "none",
-                        background: "rgba(255,255,255,0.06)", color: "rgba(162,155,254,0.7)",
-                        fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer",
-                      }}
-                    >Cancel</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <button
-              style={{
-                width: "100%", padding: "15px 0", borderRadius: 22, border: "none",
-                background: "linear-gradient(90deg, #ff4757, #c0392b)",
-                color: "#fff", fontWeight: 800, fontSize: 15, cursor: reportUploading ? "default" : "pointer",
-                opacity: reportUploading ? 0.6 : 1,
-                boxShadow: "0 0 18px rgba(255,71,87,0.4)",
-                transition: "all 0.2s", fontFamily: "inherit",
-              }}
-              onClick={() => handleReport(false)}
-              disabled={reportUploading}
-            >
-              {reportUploading ? "Uploading..." : "Submit Report"}
-            </button>
-          </div>
-        </BottomSheet>
+        />
       )}
 
       {/* ===== SEARCH ===== */}
@@ -2518,226 +2078,14 @@ export default function ProfilePage({
         </BottomSheet>
       )}
 
-      {/* ===== FEEDBACK ===== */}
       {showFeedback && (
-        <BottomSheet
+        <FeedbackPage
+          user={user}
           onClose={() => {
             closeSubPage();
             setShowFeedback(false);
-            setFeedbackCategory("");
-            setFeedbackMessage("");
-            setFeedbackAttachments([]);
           }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, flexShrink: 0 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 900 }}>💬 Send Feedback</h2>
-            <button
-              onClick={() => {
-                closeSubPage();
-                setShowFeedback(false);
-                setFeedbackCategory("");
-                setFeedbackMessage("");
-                setFeedbackAttachments([]);
-              }}
-              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "rgba(162,155,254,0.5)" }}
-            >✕</button>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <p style={{ fontSize: 12, fontWeight: 700, color: "rgba(162,155,254,0.6)", margin: "0 0 10px 0" }}>Select Category</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {["Underage", "App problems", "Suggestion", "Hashtag", "Recharge", "Room", "Login", "Others"].map(cat => (
-                  <button
-                    key={cat}
-                    onClick={() => setFeedbackCategory(cat)}
-                    style={{
-                      padding: "8px 14px", borderRadius: 20, border: "none", cursor: "pointer",
-                      fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-                      background: feedbackCategory === cat
-                        ? "linear-gradient(90deg, #C084FC, #818CF8)"
-                        : "rgba(255,255,255,0.05)",
-                      color: feedbackCategory === cat ? "#fff" : "rgba(162,155,254,0.55)",
-                      boxShadow: feedbackCategory === cat ? "0 0 10px rgba(192,132,252,0.4)" : "none",
-                      transition: "all 0.2s",
-                    }}
-                  >{cat}</button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p style={{ fontSize: 12, fontWeight: 700, color: "rgba(162,155,254,0.6)", margin: "0 0 6px 0" }}>Description</p>
-              <div style={{ position: "relative" }}>
-                <textarea
-                  className="input-field"
-                  placeholder="Describe your feedback in detail..."
-                  value={feedbackMessage}
-                  onChange={(e) => { if (e.target.value.length <= 200) setFeedbackMessage(e.target.value); }}
-                  rows={4}
-                  style={{ borderRadius: 14, padding: "12px 14px 28px 14px", resize: "none", fontFamily: "inherit", width: "100%", boxSizing: "border-box" }}
-                />
-                <span style={{
-                  position: "absolute", bottom: 8, right: 12, fontSize: 11, pointerEvents: "none",
-                  color: feedbackMessage.length >= 180 ? "#f43f5e" : "rgba(162,155,254,0.4)",
-                }}>{feedbackMessage.length}/200</span>
-              </div>
-            </div>
-
-            <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <p style={{ fontSize: 12, fontWeight: 700, color: "rgba(162,155,254,0.6)", margin: 0 }}>Attachments (Optional)</p>
-                <span style={{ fontSize: 11, color: "rgba(162,155,254,0.4)" }}>{feedbackAttachments.length}/3</span>
-              </div>
-
-              {feedbackAttachments.length > 0 && (
-                <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                  {feedbackAttachments.map((file, i) => (
-                    <div key={i} style={{ position: "relative" }}>
-                      <div style={{
-                        width: 64, height: 64, borderRadius: 10,
-                        background: "rgba(108,92,231,0.15)", border: "1px solid rgba(162,155,254,0.15)",
-                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                        fontSize: 22, gap: 2,
-                      }}>
-                        <span>{file.type.startsWith("image/") ? "🖼️" : "🎬"}</span>
-                        <span style={{ fontSize: 9, color: "rgba(162,155,254,0.5)" }}>
-                          {(file.size / 1024 / 1024).toFixed(1)}MB
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => setFeedbackAttachments(prev => prev.filter((_, j) => j !== i))}
-                        style={{
-                          position: "absolute", top: -6, right: -6, width: 18, height: 18,
-                          background: "#ff4757", border: "none", borderRadius: "50%", color: "#fff",
-                          cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center",
-                          justifyContent: "center", padding: 0, lineHeight: 1,
-                        }}
-                      >✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {feedbackAttachments.length < 3 && (
-                <button
-                  onClick={() => setShowFeedbackAttachPicker(true)}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "13px 16px",
-                    background: "rgba(255,255,255,0.04)", border: "1.5px dashed rgba(162,155,254,0.28)",
-                    borderRadius: 14, cursor: "pointer", width: "100%", fontFamily: "inherit",
-                  }}
-                >
-                  <span style={{ fontSize: 20 }}>📎</span>
-                  <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "rgba(162,155,254,0.5)", textAlign: "left" }}>
-                    Add photo/video · Max 3 photos OR 1 video + 2 photos
-                  </span>
-                  <span style={{ fontSize: 22, color: "rgba(162,155,254,0.35)", fontWeight: 300, lineHeight: 1 }}>+</span>
-                </button>
-              )}
-            </div>
-
-            {showFeedbackAttachPicker && (
-              <div
-                style={{ position: "fixed", inset: 0, zIndex: 6000, background: "rgba(0,0,0,0.72)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }}
-                onClick={() => setShowFeedbackAttachPicker(false)}
-              >
-                <div
-                  style={{
-                    background: "linear-gradient(180deg,#1e1040,#0d0926)",
-                    borderRadius: "24px 24px 0 0", padding: "20px 16px 40px",
-                    border: "1px solid rgba(162,155,254,0.12)", maxWidth: 400, width: "100%", margin: "0 auto",
-                  }}
-                  onClick={e => e.stopPropagation()}
-                >
-                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
-                    <div style={{ width: 40, height: 4, borderRadius: 2, background: "rgba(162,155,254,0.3)" }} />
-                  </div>
-                  <p style={{ textAlign: "center", fontSize: 15, fontWeight: 800, color: "#fff", margin: "0 0 18px 0" }}>Add Attachment</p>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    <label style={{
-                      display: "flex", alignItems: "center", gap: 14, padding: "15px 18px",
-                      background: "rgba(108,92,231,0.1)", border: "1px solid rgba(108,92,231,0.25)",
-                      borderRadius: 16, cursor: "pointer",
-                    }}>
-                      <span style={{ fontSize: 26 }}>📷</span>
-                      <div style={{ flex: 1 }}>
-                        <p style={{ margin: "0 0 2px", fontWeight: 700, fontSize: 15, color: "#fff" }}>Picture</p>
-                        <p style={{ margin: 0, fontSize: 12, color: "rgba(162,155,254,0.5)" }}>Select photos from gallery</p>
-                      </div>
-                      <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                        onChange={(e) => {
-                          setShowFeedbackAttachPicker(false);
-                          const files = Array.from(e.target.files || []);
-                          const photoCount = feedbackAttachments.filter(f => f.type.startsWith("image/")).length;
-                          const videoCount = feedbackAttachments.filter(f => f.type.startsWith("video/")).length;
-                          const toAdd: File[] = [];
-                          for (const f of files) {
-                            const curPhoto = photoCount + toAdd.length;
-                            const canAdd = videoCount === 0 ? curPhoto < 3 : curPhoto < 2;
-                            if (!canAdd) { showToast("Select up to 3 items: Max 3 photos OR 1 video + 2 photos", "warning"); break; }
-                            toAdd.push(f);
-                          }
-                          if (toAdd.length) setFeedbackAttachments(prev => [...prev, ...toAdd]);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <label style={{
-                      display: "flex", alignItems: "center", gap: 14, padding: "15px 18px",
-                      background: "rgba(108,92,231,0.1)", border: "1px solid rgba(108,92,231,0.25)",
-                      borderRadius: 16, cursor: "pointer",
-                    }}>
-                      <span style={{ fontSize: 26 }}>🎬</span>
-                      <div style={{ flex: 1 }}>
-                        <p style={{ margin: "0 0 2px", fontWeight: 700, fontSize: 15, color: "#fff" }}>Video</p>
-                        <p style={{ margin: 0, fontSize: 12, color: "rgba(162,155,254,0.5)" }}>Max 20MB · 1 video per submission</p>
-                      </div>
-                      <input type="file" accept="video/*" style={{ display: "none" }}
-                        onChange={(e) => {
-                          setShowFeedbackAttachPicker(false);
-                          const f = e.target.files?.[0];
-                          if (!f) return;
-                          if (f.size > 20 * 1024 * 1024) { showToast("Size of a single video cannot exceed 20 MB", "warning"); e.target.value = ""; return; }
-                          const videoCount = feedbackAttachments.filter(x => x.type.startsWith("video/")).length;
-                          const photoCount = feedbackAttachments.filter(x => x.type.startsWith("image/")).length;
-                          if (videoCount >= 1 || photoCount > 2) { showToast("Select up to 3 items: Max 3 photos OR 1 video + 2 photos", "warning"); e.target.value = ""; return; }
-                          setFeedbackAttachments(prev => [...prev, f]);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <button
-                      onClick={() => setShowFeedbackAttachPicker(false)}
-                      style={{
-                        padding: "15px 0", borderRadius: 16, border: "none",
-                        background: "rgba(255,255,255,0.06)", color: "rgba(162,155,254,0.7)",
-                        fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer",
-                      }}
-                    >Cancel</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={() => handleReport(true)}
-              disabled={feedbackSending}
-              style={{
-                width: "100%", padding: "16px 0", borderRadius: 22, border: "none",
-                background: "radial-gradient(ellipse at center, #7c3aed 0%, #4f46e5 100%)",
-                color: "#fff", fontWeight: 800, fontSize: 15,
-                cursor: feedbackSending ? "default" : "pointer",
-                opacity: feedbackSending ? 0.6 : 1,
-                boxShadow: "0 0 20px rgba(124,58,237,0.45)",
-                transition: "all 0.2s",
-                fontFamily: "inherit",
-              }}
-            >
-              {feedbackSending ? "Sending..." : "Submit Feedback"}
-            </button>
-          </div>
-        </BottomSheet>
+        />
       )}
 
       {/* ===== HELP ===== */}
@@ -3582,216 +2930,21 @@ export default function ProfilePage({
         </BottomSheet>
       )}
 
-      {/* ===== BACKPACK ===== */}
       {showBackpack && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 1100,
-            background: "#0F0F1A",
-            display: "flex",
-            flexDirection: "column",
-            maxWidth: 430,
-            margin: "0 auto",
+        <BackpackPage
+          user={user}
+          onUpdate={onUpdate}
+          showToast={showToast}
+          onClose={() => {
+            closeSubPage();
+            setShowBackpack(false);
           }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "52px 16px 12px",
-              borderBottom: "1px solid rgba(255,255,255,0.06)",
-            }}
-          >
-            <button
-              onClick={() => {
-                closeSubPage();
-                setShowBackpack(false);
-              }}
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 12,
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.09)",
-                cursor: "pointer",
-                fontSize: 16,
-                color: "#fff",
-              }}
-            >
-              ‹
-            </button>
-            <h2 style={{ fontSize: 18, fontWeight: 900 }}>🎒 Backpack</h2>
-            <div style={{ width: 36 }} />
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              gap: 0,
-              borderBottom: "1px solid rgba(255,255,255,0.06)",
-            }}
-          >
-            {(
-              [
-                ["frame", "🖼️", "Frames"],
-                ["entry", "⚡", "Entry FX"],
-                ["theme", "🎨", "Themes"],
-              ] as const
-            ).map(([cat, ico, label]) => (
-              <button
-                key={cat}
-                onClick={() => setBackpackCategory(cat)}
-                style={{
-                  flex: 1,
-                  padding: "14px 0",
-                  border: "none",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  background: backpackCategory === cat ? "rgba(108,92,231,0.15)" : "transparent",
-                  borderBottom: backpackCategory === cat ? "2px solid #6C5CE7" : "2px solid transparent",
-                  color: backpackCategory === cat ? "#A29BFE" : "rgba(162,155,254,0.45)",
-                  fontSize: 13,
-                  fontWeight: 700,
-                  transition: "all 0.2s",
-                }}
-              >
-                {ico} {label}
-              </button>
-            ))}
-          </div>
-
-          <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
-            {(() => {
-              const inv = user.inventory || {};
-              const categoryItems = Object.values(inv).filter((o) => {
-                const si = getStoreItem(o.itemId);
-                return si && si.category === backpackCategory;
-              });
-              if (categoryItems.length === 0) {
-                return (
-                  <div style={{ textAlign: "center", padding: "60px 20px" }}>
-                    <span style={{ fontSize: 48, opacity: 0.3 }}>📦</span>
-                    <p style={{ fontSize: 14, color: "rgba(162,155,254,0.4)", marginTop: 12 }}>No items yet</p>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      style={{ marginTop: 12 }}
-                      onClick={() => {
-                        setShowBackpack(false);
-                        setShowStorePage(true);
-                        setStoreCategory(backpackCategory);
-                      }}
-                    >
-                      Visit Store
-                    </button>
-                  </div>
-                );
-              }
-              return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {categoryItems.map((owned) => {
-                    const item = getStoreItem(owned.itemId);
-                    if (!item) return null;
-                    const rc = getRarityColor(item.rarity);
-                    return (
-                      <div
-                        key={owned.itemId}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 14,
-                          padding: "14px 16px",
-                          borderRadius: 16,
-                          background: owned.equipped ? "rgba(108,92,231,0.1)" : "rgba(255,255,255,0.03)",
-                          border: owned.equipped ? `1.5px solid ${rc}50` : "1px solid rgba(255,255,255,0.06)",
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: 52,
-                            height: 52,
-                            borderRadius: isAnimatedFrame(item.id) ? "50%" : 14,
-                            background: isAnimatedFrame(item.id) ? "transparent" : item.preview,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontSize: 26,
-                            border: isAnimatedFrame(item.id) ? "none" : `2px solid ${rc}40`,
-                            boxShadow: owned.equipped && !isAnimatedFrame(item.id) ? `0 0 16px ${rc}30` : "none",
-                            position: "relative",
-                            overflow: "visible",
-                          }}
-                        >
-                          {isAnimatedFrame(item.id) ? (
-                            <FramePreview frameId={item.id} size={38} />
-                          ) : isPngFrame(item.id) ? (
-                            (() => {
-                              const pp = getPngFramePath(item.id);
-                              return pp ? <img src={pp} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} /> : item.icon;
-                            })()
-                          ) : (
-                            item.icon
-                          )}
-                        </div>
-                        <div style={{ flex: 1 }}>
-                          <p style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{item.name}</p>
-                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
-                            <span style={{ fontSize: 10, color: rc, fontWeight: 700, textTransform: "uppercase" }}>
-                              {item.rarity}
-                            </span>
-                            {owned.equipped && (
-                              <span style={{ fontSize: 10, color: "#00e676", fontWeight: 700 }}>• Active</span>
-                            )}
-                          </div>
-                        </div>
-                        {owned.equipped ? (
-                          <button
-                            onClick={() => handleUnequip(owned.itemId)}
-                            disabled={storeLoading === owned.itemId}
-                            style={{
-                              padding: "8px 16px",
-                              borderRadius: 12,
-                              border: "1px solid rgba(255,100,130,0.3)",
-                              cursor: "pointer",
-                              background: "rgba(255,100,130,0.1)",
-                              color: "#ff6482",
-                              fontSize: 12,
-                              fontWeight: 800,
-                              fontFamily: "inherit",
-                            }}
-                          >
-                            {storeLoading === owned.itemId ? "..." : "Remove"}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleEquip(owned.itemId)}
-                            disabled={storeLoading === owned.itemId}
-                            style={{
-                              padding: "8px 16px",
-                              borderRadius: 12,
-                              border: "none",
-                              cursor: "pointer",
-                              background: "linear-gradient(135deg, #6C5CE7, #8B7CF6)",
-                              color: "#fff",
-                              fontSize: 12,
-                              fontWeight: 800,
-                              fontFamily: "inherit",
-                              boxShadow: "0 0 12px rgba(108,92,231,0.3)",
-                            }}
-                          >
-                            {storeLoading === owned.itemId ? "..." : isAnimatedFrame(owned.itemId) ? "Apply" : "Equip"}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </div>
-        </div>
+          onVisitStore={(category) => {
+            setShowBackpack(false);
+            setShowStorePage(true);
+            setStoreCategory(category);
+          }}
+        />
       )}
 
       {/* ===== OFFICIAL RULES ===== */}

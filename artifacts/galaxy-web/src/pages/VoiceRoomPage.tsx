@@ -1,4 +1,4 @@
-// VoiceRoomPage.tsx – Dynamic Room Theme Picker with Optimized Background
+// VoiceRoomPage.tsx – Integrated with new UserProfileSheet
 import React, { useState, useEffect, useRef } from "react";
 import { uploadWithAppCheck } from "../lib/firebase";
 import { getStoreItem, STORE_ITEMS } from "../lib/storeService";
@@ -11,7 +11,7 @@ import {
   kickUserFromRoom, updateRoomSettings, endRoom,
   followRoom, unfollowRoom, setupPresence,
 } from "../lib/roomService";
-import { UserProfile, gainXP, sendGift, incrementStat, followUser, reportUser, isOfficialOrAdmin, ensureSuperAdmin, isSuperAdmin, getUser } from "../lib/userService";
+import { UserProfile, gainXP, sendGift, incrementStat, followUser, unfollowUser, reportUser, isOfficialOrAdmin, ensureSuperAdmin, isSuperAdmin, getUser } from "../lib/userService";
 import { recordGift, getGiftLeaderboard, LeaderboardEntry, LeaderboardPeriod } from "../lib/giftService";
 import { sendNotification } from "../lib/notificationService";
 import { getOrCreateConversation } from "../lib/chatService";
@@ -25,6 +25,7 @@ import { subscribeNotifications, Notification } from "../lib/notificationService
 import GiftAnimation from "../components/gifts/GiftAnimation";
 import { GiftAnimState } from "../components/gifts/giftTypes";
 import EntryEffect from "../components/room/EntryEffect";
+import UserProfileSheet from "../components/room/UserProfileSheet"; // 🆕 NEW IMPORT
 import { ref as dbRef, get } from "firebase/database";
 import { db } from "../lib/firebase";
 
@@ -50,7 +51,8 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
   const [selectedUserUid, setSelectedUserUid] = useState<string | null>(null);
   const [welcomeAnim, setWelcomeAnim] = useState<string | null>(null);
   const [showSeatSheet, setShowSeatSheet] = useState<number | null>(null);
-  const [showProfileCard, setShowProfileCard] = useState<{ uid: string; name: string; avatar: string; seatIdx: number } | null>(null);
+  // 🆕 New sheet state – replaces old showProfileCard
+  const [profileSheetSeat, setProfileSheetSeat] = useState<number | null>(null);
   const [controlPanel, setControlPanel] = useState(false);
   const [cpTab, setCpTab] = useState<"profile" | "follower" | "events">("profile");
   const [cpSubView, setCpSubView] = useState<null | "blocked" | "advanced" | "country">(null);
@@ -94,7 +96,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
   // ─── Helper to optimize Cloudinary images ───
   const optimizeImageUrl = (url: string): string => {
     if (!url || !url.includes("cloudinary.com")) return url;
-    // Add width 400, auto quality, auto format for mobile
     return url.replace("/upload/", "/upload/w_400,q_auto,f_auto/");
   };
 
@@ -148,14 +149,12 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
     try {
       await preloadImage(imageUrl);
     } catch {
-      // Keep the room usable when a remote CDN image is unavailable.
       setBackgroundValue(cssFallback);
     } finally {
       setBackgroundReady(true);
     }
   };
 
-  // ─── Apply the already-preloaded background ───
   useEffect(() => {
     const container = roomContainerRef.current;
     if (!container) return;
@@ -167,7 +166,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
     container.style.backgroundColor = "#0a0614";
   }, [backgroundValue]);
 
-  // ─── Original useEffects (unchanged) ───
   useEffect(() => {
     const unsub1 = subscribeRoom(roomId, r => {
       if (!r && joinedRef.current) {
@@ -698,7 +696,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
           </div>
         </div>
       )}
-      {/* Default mystical background – only shown when no custom theme is active */}
       {!backgroundValue && (!room?.theme || room.theme === "galaxy") && (
         <>
           <div className="room-bg" style={{ backgroundImage: `url(${import.meta.env.BASE_URL}bg-mystical.png)` }} />
@@ -764,18 +761,30 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
         equippedFrames={equippedFrames}
         ghostUids={new Set(Object.values(room.roomUsers || {}).filter((ru: any) => ru.ghostMode).map((ru: any) => ru.uid))}
         onSeatTap={(i, seat) => {
+          // Own seat → existing seat sheet
           if (seat.userId === user.uid) {
             setShowSeatSheet(i);
             return;
           }
+          // Occupied by someone else → show new UserProfileSheet
           if (seat.userId) {
-            setShowProfileCard({ uid: seat.userId, name: seat.username || "User", avatar: seat.avatar || "\u{1F464}", seatIdx: i });
-          } else if (seat.isLocked && hasControl) {
+            setProfileSheetSeat(i);
+            return;
+          }
+          // Empty + locked → unlock if admin
+          if (seat.isLocked && hasControl) {
             toggleLockSeat(roomId, i, false).then(() => {
               showToast(`Seat ${i + 1} unlocked`, "success");
             }).catch(console.error);
-          } else if (!seat.isLocked) {
-            setShowSeatSheet(i);
+            return;
+          }
+          // Empty + unlocked → if admin/owner show invite sheet, else show take-seat sheet
+          if (!seat.isLocked) {
+            if (hasControl) {
+              setProfileSheetSeat(i); // 🆕 opens UserProfileSheet with invite option
+            } else {
+              setShowSeatSheet(i); // normal user → take seat
+            }
           }
         }}
       />
@@ -832,6 +841,76 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
           filter: "drop-shadow(0 0 8px rgba(167,139,250,0.6))",
         }}>{f.emoji}</div>
       ))}
+
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* 🆕 NEW: UserProfileSheet – Real data, invite / leave / mute / kick */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {profileSheetSeat !== null && room.seats[profileSheetSeat] && (
+        <UserProfileSheet
+          isOpen={profileSheetSeat !== null}
+          onClose={() => setProfileSheetSeat(null)}
+          user={{
+            seat: profileSheetSeat + 1,
+            occupied: !!room.seats[profileSheetSeat].userId,
+            id: room.seats[profileSheetSeat].userId || null,
+            name: room.seats[profileSheetSeat].username || null,
+            avatar: room.seats[profileSheetSeat].avatar || null,
+            muted: room.seats[profileSheetSeat].isMuted || false,
+          }}
+          viewerRole={
+            room.hostId === user.uid || userIsSuperAdmin
+              ? "owner"
+              : (room.adminIds || []).includes(user.uid)
+              ? "admin"
+              : "user"
+          }
+          isFollowing={
+            room.seats[profileSheetSeat].userId
+              ? (user.followingList || []).includes(room.seats[profileSheetSeat].userId!)
+              : false
+          }
+          onFollow={() => {
+            const uid = room.seats[profileSheetSeat].userId;
+            if (uid) followUser(user.uid, uid).catch(console.error);
+          }}
+          onUnfollow={() => {
+            const uid = room.seats[profileSheetSeat].userId;
+            if (uid) unfollowUser(user.uid, uid).catch(console.error);
+          }}
+          onChat={() => {
+            const uid = room.seats[profileSheetSeat].userId;
+            setProfileSheetSeat(null);
+            if (uid && onMessage) onMessage(uid);
+          }}
+          onGift={() => {
+            setProfileSheetSeat(null);
+            showToast("Gift panel opened 🎁", "info");
+          }}
+          onInvite={() => {
+            // Only for empty seats – invoke handleInviteToSeat with the seat index
+            handleInviteToSeat(user.uid, profileSheetSeat);
+          }}
+          onLeaveSeat={() => {
+            handleSeatAction("kick", profileSheetSeat);
+          }}
+          onKick={() => {
+            const uid = room.seats[profileSheetSeat].userId;
+            if (uid) {
+              kickFromSeat(roomId, profileSheetSeat).catch(console.error);
+              sendRoomMessage(roomId, { userId: "system", username: "System", avatar: "\u{1F6AB}", text: `${room.seats[profileSheetSeat].username} was kicked from the seat`, type: "system" }).catch(console.error);
+            }
+          }}
+          onToggleMute={() => {
+            const seat = room.seats[profileSheetSeat];
+            toggleMuteSeat(roomId, profileSheetSeat, !seat.isMuted).catch(console.error);
+          }}
+          onMakeAdmin={() => {
+            const uid = room.seats[profileSheetSeat].userId;
+            if (uid) setAdmin(roomId, uid).catch(console.error);
+          }}
+          showToast={showToast}
+        />
+      )}
 
       {showGameHub && (
         <GameHub
@@ -1327,7 +1406,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
             display: "flex", flexDirection: "column",
             animation: "slide-up 0.3s ease",
           }}>
-            {/* Top close bar */}
             <div style={{
               display: "flex", alignItems: "center",
               padding: "52px 16px 8px",
@@ -1368,7 +1446,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
             )}
 
             <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
-              {/* Sub-views */}
               {cpSubView === "blocked" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {bannedCount === 0 ? (
@@ -1483,10 +1560,8 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
                 </div>
               )}
 
-              {/* Profile tab */}
               {!cpSubView && cpTab === "profile" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                  {/* Avatar header card */}
                   <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "8px 4px" }}>
                     <div style={{
                       width: 64, height: 64, borderRadius: 32, fontSize: 32, overflow: "hidden",
@@ -1548,7 +1623,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
                     )}
                   </div>
 
-                  {/* Level bar */}
                   <div style={{ background: "rgba(255,255,255,0.025)", borderRadius: 14, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.05)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Level</span>
@@ -1567,11 +1641,9 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
                     </div>
                   </div>
 
-                  {/* Settings rows */}
                   <Row label="Bonus" onClick={() => showToast("Bonus rewards coming soon!", "info")} />
                   <Row label="Date data" onClick={() => showToast("Date data coming soon!", "info")} />
 
-                  {/* Announcement */}
                   <div style={{ background: "rgba(255,255,255,0.025)", borderRadius: 14, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.05)" }}>
                     <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
                       <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Announcement</span>
@@ -1643,7 +1715,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
                 </div>
               )}
 
-              {/* Follower tab */}
               {!cpSubView && cpTab === "follower" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <input className="input-field" placeholder="Search followers..."
@@ -1680,7 +1751,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
                 </div>
               )}
 
-              {/* Events tab */}
               {!cpSubView && cpTab === "events" && (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 20px", gap: 16 }}>
                   <div style={{ fontSize: 56, animation: "float 3s ease-in-out infinite" }}>{"\u{1F389}"}</div>
@@ -1757,130 +1827,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
                 </div>
               ))}
             </div>
-          </div>
-        </Overlay>
-      )}
-
-      {showProfileCard && (
-        <Overlay onClose={() => setShowProfileCard(null)}>
-          <div className="card" style={{
-            width: 300, padding: 20, animation: "popIn 0.2s ease",
-          }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-              <div style={{
-                width: 56, height: 56, borderRadius: 28, fontSize: 28,
-                background: "rgba(108,92,231,0.15)", border: "2px solid rgba(108,92,231,0.3)",
-                display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
-              }}>
-                {showProfileCard.avatar?.startsWith?.("http")
-                  ? <img src={showProfileCard.avatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 28 }} onError={e => { (e.target as HTMLImageElement).style.display = "none"; (e.target as HTMLImageElement).parentElement!.textContent = "\u{1F464}"; }} />
-                  : (showProfileCard.avatar && showProfileCard.avatar.length <= 4 ? showProfileCard.avatar : "\u{1F464}")}
-              </div>
-              <div style={{ flex: 1 }}>
-                <p style={{ fontSize: 16, fontWeight: 900 }}>{showProfileCard.name}</p>
-                <RoleBadge role={getUserRole(room, showProfileCard.uid)} />
-                <p style={{ fontSize: 10, color: "rgba(162,155,254,0.3)", marginTop: 3 }}>Seat {showProfileCard.seatIdx + 1}</p>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <button className="btn btn-primary" style={{ flex: 1, fontSize: 13, padding: "12px 0", borderRadius: 14 }}
-                onClick={async () => {
-                  try {
-                    const isFollowing = (user.followingList || []).includes(showProfileCard!.uid);
-                    if (isFollowing) { showToast("Already following!", "info"); }
-                    else {
-                      const res = await followUser(user.uid, showProfileCard!.uid);
-                      showToast(res.isMutual ? "You're now friends!" : "Followed!", "success");
-                    }
-                  } catch { showToast("Follow failed", "error"); }
-                  setShowProfileCard(null);
-                }}>
-                {(user.followingList || []).includes(showProfileCard.uid) ? "\u2705 Following" : "\u2795 Follow"}
-              </button>
-              <button className="btn btn-ghost" style={{ flex: 1, fontSize: 13, padding: "12px 0", borderRadius: 14 }}
-                onClick={async () => {
-                  const pc = showProfileCard!;
-                  setShowProfileCard(null);
-                  try {
-                    const otherProfile = await getUser(pc.uid);
-                    await getOrCreateConversation(
-                      user.uid, user.name, user.avatar,
-                      pc.uid, otherProfile?.name || pc.name, otherProfile?.avatar || pc.avatar
-                    );
-                    if (onMessage) onMessage(pc.uid);
-                    else showToast("Opening chat...", "info");
-                  } catch { showToast("Could not open chat", "error"); }
-                }}>
-                {"\u{1F4AC}"} Chat
-              </button>
-              <button className="btn btn-ghost" style={{ flex: 1, fontSize: 13, padding: "12px 0", borderRadius: 14 }}
-                onClick={() => {
-                  setShowProfileCard(null);
-                  handleGift({ emoji: "\u{1F381}", name: "Gift Box", cost: 10 }, 1);
-                }}>
-                {"\u{1F381}"} Gift
-              </button>
-            </div>
-
-            <div style={{ display: "flex", gap: 6, marginBottom: hasControl ? 10 : 0, flexWrap: "wrap" }}>
-              {hasControl && (
-                <>
-                  <button className="btn btn-ghost btn-sm" style={{ flex: 1, fontSize: 11, borderRadius: 12 }}
-                    onClick={() => {
-                      const pc = showProfileCard;
-                      setShowProfileCard(null);
-                      const mxM2 = room?.maxMics || 12;
-                      const emptySeat = room?.seats.findIndex((s, si) => si < mxM2 && !s.userId && !s.isLocked);
-                      if (emptySeat !== undefined && emptySeat >= 0) handleInviteToSeat(pc!.uid, emptySeat);
-                      else showToast("No empty seats", "warning");
-                    }}>
-                    {"\u{1F3A4}"} Invite Mic
-                  </button>
-                  <button className="btn btn-ghost btn-sm" style={{ flex: 1, fontSize: 11, borderRadius: 12 }}
-                    onClick={() => {
-                      const pc = showProfileCard;
-                      setShowProfileCard(null);
-                      setSelectedSeat(pc!.seatIdx);
-                      setShowHostControls(true);
-                    }}>
-                    {"\u2699\uFE0F"} Manage
-                  </button>
-                </>
-              )}
-              <button className="btn btn-ghost btn-sm" style={{ flex: 1, fontSize: 11, borderRadius: 12, color: "rgba(255,100,130,0.7)" }}
-                onClick={() => {
-                  setShowReportModal(showProfileCard!.uid);
-                  setShowProfileCard(null);
-                }}>
-                {"\u26A0\uFE0F"} Report
-              </button>
-            </div>
-
-            {hasControl && (
-              <div style={{ display: "flex", gap: 6 }}>
-                {isOwner && (
-                  <button className="btn btn-ghost btn-sm" style={{ flex: 1, fontSize: 11, borderRadius: 12 }}
-                    onClick={async () => {
-                      const uid = showProfileCard!.uid;
-                      const isAdm = (room?.adminIds || []).includes(uid);
-                      if (isAdm) { await removeAdmin(roomId, uid); showToast("Admin removed", "info"); }
-                      else { await setAdmin(roomId, uid); showToast("Admin set!", "success"); }
-                      setShowProfileCard(null);
-                    }}>
-                    {(room?.adminIds || []).includes(showProfileCard.uid) ? "\u274C Remove Admin" : "\u{1F6E1}\uFE0F Make Admin"}
-                  </button>
-                )}
-                <button className="btn btn-ghost btn-sm" style={{ flex: 1, fontSize: 11, borderRadius: 12 }}
-                  onClick={() => { handleSeatAction("mute", showProfileCard!.seatIdx); setShowProfileCard(null); }}>
-                  {"\u{1F507}"} Mute
-                </button>
-                <button className="btn btn-danger btn-sm" style={{ flex: 1, fontSize: 11, borderRadius: 12 }}
-                  onClick={() => { handleSeatAction("kick", showProfileCard!.seatIdx); setShowProfileCard(null); }}>
-                  {"\u{1F6AB}"} Kick
-                </button>
-              </div>
-            )}
           </div>
         </Overlay>
       )}
@@ -1978,8 +1924,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
         </div>
       )}
 
-      {/* PK battle button hidden from UI — feature accessible via admin panel only */}
-
       {showPKPanel && isOwner && (
         <Overlay onClose={() => setShowPKPanel(false)}>
           <div className="card" style={{ width: 300, padding: 20, animation: "popIn 0.2s ease" }} onClick={e => e.stopPropagation()}>
@@ -2012,7 +1956,6 @@ export default function VoiceRoomPage({ roomId, user, onLeave, onMinimize, enter
         </Overlay>
       )}
 
-      {/* ── Left-side utility buttons – only waitlist button remains (⏳) ── */}
       <div style={{ position: "fixed", bottom: 160, left: 12, zIndex: 450, display: "flex", flexDirection: "column", gap: 8 }}>
         {waitlist.length > 0 && hasControl && (
           <button onClick={() => setShowWaitlist(!showWaitlist)} style={{
