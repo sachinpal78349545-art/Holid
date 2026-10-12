@@ -1,3 +1,4 @@
+// ChatSection.tsx
 import React, { useEffect, useState } from "react";
 import { RoomMessage, cleanName } from "./types";
 
@@ -5,191 +6,195 @@ interface ChatSectionProps {
   messages: RoomMessage[];
   userId: string;
   msgEndRef: React.RefObject<HTMLDivElement>;
+  onUserClick?: (userId: string, username: string, avatar: string) => void;
+  onClapClick?: (msg: RoomMessage) => void;
 }
 
-export default function ChatSection({ messages, userId: _userId, msgEndRef }: ChatSectionProps) {
+export default function ChatSection({
+  messages, userId: _userId, msgEndRef,
+  onUserClick = () => {}, onClapClick = () => {},
+}: ChatSectionProps) {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   useEffect(() => {
-    const handleViewportChange = () => {
+    const handle = () => {
       if (window.visualViewport) {
-        const heightDiff = window.innerHeight - window.visualViewport.height;
-        setKeyboardHeight(heightDiff > 150 ? heightDiff : 0);
+        const d = window.innerHeight - window.visualViewport.height;
+        setKeyboardHeight(d > 150 ? d : 0);
       }
     };
-    window.visualViewport?.addEventListener("resize", handleViewportChange);
-    return () => window.visualViewport?.removeEventListener("resize", handleViewportChange);
+    window.visualViewport?.addEventListener("resize", handle);
+    return () => window.visualViewport?.removeEventListener("resize", handle);
   }, []);
 
   useEffect(() => {
     msgEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, keyboardHeight]);
 
-  const grouped: (RoomMessage & { showHeader: boolean })[] = [];
-  messages.forEach((msg, idx) => {
-    const prev = messages[idx - 1];
-    let showHeader = true;
-    if (prev && prev.userId === msg.userId && msg.type !== "system") {
-      showHeader = false;
-    }
-    grouped.push({ ...msg, showHeader });
-  });
-
   return (
-    <div 
-      className="chat-fixed-container" 
-      style={{ 
-        transform: `translateY(-${keyboardHeight > 0 ? keyboardHeight - 20 : 0}px)`,
-      }}
-    >
-      <div className="chat-scroll-box">
-        <div className="chat-content-list">
-          {grouped.map((msg, i) => {
-            const isSystem = ["system", "join", "leave", "welcome"].includes(msg.type || "");
-            
-            // 🎁 Check if message is a Gift message
-            const isGift = msg.text?.includes("sent 🎁") || msg.type === "gift";
-
-            if (isSystem) {
-              return (
-                <div key={i} className="chat-entry system-message">
-                  <div className="chat-main-bubble system-bubble">
-                    <p>{msg.text}</p>
-                  </div>
-                </div>
-              );
-            }
-
-            if (isGift) {
-              // Custom extraction if needed, or fallback rendering with premium background
-              // Extracting image URL from message properties if present
-              const giftImgUrl = (msg as any).giftUrl || (msg as any).url;
-
-              return (
-                <div key={i} className={`chat-entry ${!msg.showHeader ? 'no-header' : ''}`}>
-                  {msg.showHeader && (
-                    <div className="chat-user-row">
-                      <div className="chat-avatar-small">
-                        {msg.avatar?.startsWith?.("http") ? <img src={msg.avatar} alt="" /> : <span>👤</span>}
-                      </div>
-                      <span className="chat-name-label">{cleanName(msg.username)}</span>
-                      <span className="chat-lv-badge">Lv.6</span>
-                    </div>
-                  )}
-                  <div className="chat-bubble-wrapper">
-                    <div className="chat-main-bubble gift-premium-message-bubble">
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <p style={{ color: "#ffb703", fontWeight: "600" }}>{msg.text}</p>
-                        {giftImgUrl && (
-                          <img 
-                            src={giftImgUrl} 
-                            alt="gift" 
-                            style={{ width: "24px", height: "24px", objectFit: "cover", borderRadius: "4px" }} 
-                          />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            }
-
-            return (
-              <div key={i} className={`chat-entry ${!msg.showHeader ? 'no-header' : ''}`}>
-                {msg.showHeader && (
-                  <div className="chat-user-row">
-                    <div className="chat-avatar-small">
-                      {msg.avatar?.startsWith?.("http") ? <img src={msg.avatar} alt="" /> : <span>👤</span>}
-                    </div>
-                    <span className="chat-name-label">{cleanName(msg.username)}</span>
-                    <span className="chat-lv-badge">Lv.6</span>
-                  </div>
-                )}
-                <div className="chat-bubble-wrapper">
-                  <div className="chat-main-bubble">
-                    <p>{msg.text}</p>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          <div ref={msgEndRef} />
-        </div>
+    <div style={{
+      position: "absolute", zIndex: 2,
+      left: 14, right: 14, top: "55%", bottom: 86,
+      display: "flex", flexDirection: "column", gap: 10,
+      minHeight: 0,
+      transform: `translateY(-${keyboardHeight > 0 ? keyboardHeight - 20 : 0}px)`,
+      transition: "transform 0.2s",
+    }}>
+      {/* NOTICE */}
+      <div style={{
+        background: "#1e46669c",
+        color: "#ffe84b",
+        padding: "12px 16px",
+        borderRadius: "5px 5px 12px 12px",
+        fontSize: 13,
+        backdropFilter: "blur(6px)",
+      }}>
+        Welcome to Top Chat. Please respect each other and chat in a decent manner.
       </div>
 
-      <style>{`
-        .chat-fixed-container {
-          position: fixed;
-          left: 12px;
-          width: 75%;
-          height: 350px; 
-          bottom: 95px; 
-          z-index: 100;
-          pointer-events: none;
-          transition: transform 0.2s cubic-bezier(0, 0, 0.2, 1);
-        }
+      {/* MESSAGES SCROLL */}
+      <div style={{
+        display: "flex", flexDirection: "column", gap: 10,
+        overflowY: "auto", overscrollBehavior: "contain",
+        flex: 1, padding: "2px 2px 10px",
+        scrollbarWidth: "none",
+        maskImage: "linear-gradient(to top, black 85%, transparent 100%)",
+        WebkitMaskImage: "linear-gradient(to top, black 85%, transparent 100%)",
+      }}>
+        {messages.map((msg, i) => {
+          const isEnterRoom = msg.type === "join" ||
+            msg.text?.toLowerCase().includes("enter the room");
+          const isWelcome = msg.type === "welcome" ||
+            msg.text?.toLowerCase().includes("welcome to the room");
 
-        .chat-scroll-box {
-          width: 100%;
-          height: 100%;
-          overflow-y: auto;
-          pointer-events: auto;
-          display: flex;
-          flex-direction: column;
-          mask-image: linear-gradient(to top, black 85%, transparent 100%);
-          -webkit-overflow-scrolling: touch;
-        }
+          // ENTER ROOM MESSAGE
+          if (isEnterRoom) {
+            return (
+              <div key={i} style={{
+                display: "flex", gap: 7, alignItems: "center",
+                maxWidth: "95%",
+                background: "#3a1c3dba",
+                backdropFilter: "blur(8px)",
+                padding: "8px 12px",
+                borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.1)",
+              }}>
+                <div
+                  onClick={() => onUserClick(msg.userId, msg.username, msg.avatar)}
+                  style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, cursor: "pointer" }}
+                >
+                  <img
+                    src={msg.avatar || "https://i.pravatar.cc/100"}
+                    alt=""
+                    style={{ width: 32, height: 32, borderRadius: "50%", border: "1px solid #ffe15a" }}
+                  />
+                  <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+                    <span style={{ color: "#d946ef", fontWeight: "bold", fontSize: 13 }}>
+                      {cleanName(msg.username)}
+                    </span>
+                    <span style={{ color: "#fff", fontSize: 12 }}>enter the room</span>
+                  </div>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onClapClick(msg); }}
+                  style={{
+                    background: "transparent", border: "none",
+                    fontSize: 22, cursor: "pointer", padding: "0 4px",
+                    transition: "transform 0.1s",
+                  }}
+                >👏</button>
+              </div>
+            );
+          }
 
-        .chat-content-list {
-          margin-top: auto;
-          padding-bottom: 10px;
-        }
+          // WELCOME SYSTEM MESSAGE
+          if (isWelcome) {
+            const tId = (msg as any).targetUserId || msg.userId;
+            const tName = (msg as any).targetUsername || msg.username;
+            const tAvatar = (msg as any).targetAvatar || msg.avatar;
+            return (
+              <div
+                key={i}
+                onClick={() => onUserClick(tId, tName, tAvatar)}
+                style={{
+                  alignSelf: "flex-start", maxWidth: "92%",
+                  padding: "12px 14px",
+                  borderRadius: "5px 16px 16px 5px",
+                  background: "#751db7f0",
+                  borderLeft: "3px solid #ffce40",
+                  fontSize: 13,
+                  boxShadow: "0 2px 8px #0003",
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ color: "#d946ef", fontWeight: "bold" }}>@{cleanName(tName)}</span>
+                <span style={{ color: "#fff", marginLeft: 4 }}>{msg.text}</span>
+              </div>
+            );
+          }
 
-        .chat-entry { display: flex; flex-direction: column; margin-top: 8px; }
-        .chat-entry.no-header { margin-top: 1px; }
+          // SYSTEM MESSAGE
+          if (msg.type === "system" || msg.type === "leave") {
+            return (
+              <div key={i} style={{
+                alignSelf: "flex-start",
+                padding: "6px 10px",
+                borderRadius: 10,
+                background: "#1e46669c",
+                color: "#ffe84b",
+                fontSize: 12,
+              }}>
+                {msg.text}
+              </div>
+            );
+          }
 
-        .chat-user-row { display: flex; align-items: center; gap: 5px; }
-        .chat-avatar-small { width: 20px; height: 20px; border-radius: 50%; overflow: hidden; }
-        .chat-avatar-small img { width: 100%; height: 100%; object-fit: cover; }
-        .chat-name-label { font-size: 11px; color: #fff; font-weight: 600; opacity: 0.9; }
-        .chat-lv-badge { background: linear-gradient(90deg, #4facfe, #00f2fe); font-size: 8px; padding: 0 4px; border-radius: 4px; color: #fff; }
-
-        .chat-bubble-wrapper { padding-left: 25px; }
-        
-        .chat-main-bubble {
-          background: rgba(0, 0, 0, 0.4);
-          backdrop-filter: blur(4px);
-          padding: 6px 10px;
-          border-radius: 4px 14px 14px 14px;
-          display: inline-block;
-        }
-
-        /* 👑 PREMIUM GIFT ROW EFFECTS */
-        .gift-premium-message-bubble {
-          background: linear-gradient(135deg, rgba(124, 58, 237, 0.35), rgba(236, 72, 153, 0.2)) !important;
-          border: 1px solid rgba(236, 72, 153, 0.3);
-          box-shadow: 0 0 10px rgba(124, 58, 237, 0.2);
-          border-radius: 6px 16px 16px 16px !important;
-        }
-        
-        /* SYSTEM MESSAGE STYLE (Yellow Text, No Avatar) */
-        .system-message {
-          margin-top: 4px;
-        }
-        .system-bubble {
-          background: rgba(0, 0, 0, 0.2) !important;
-          border-radius: 10px !important;
-          padding: 4px 8px !important;
-        }
-        .system-bubble p {
-          color: #FFD700 !important; /* Yellow Color */
-          font-size: 12px !important;
-          font-weight: 500;
-        }
-
-        .chat-main-bubble p { font-size: 13.5px; color: #fff; margin: 0; line-height: 1.3; }
-        .chat-scroll-box::-webkit-scrollbar { width: 0px; }
-      `}</style>
+          // NORMAL CHAT MESSAGE
+          return (
+            <div key={i} style={{
+              display: "flex", gap: 7, alignItems: "flex-start", maxWidth: "95%",
+            }}>
+              <img
+                src={msg.avatar || "https://i.pravatar.cc/100"}
+                alt=""
+                onClick={() => onUserClick(msg.userId, msg.username, msg.avatar)}
+                style={{
+                  width: 36, height: 36, borderRadius: "50%",
+                  border: "1px solid #ffe15a", objectFit: "cover",
+                  flexShrink: 0, cursor: "pointer",
+                }}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div
+                  onClick={() => onUserClick(msg.userId, msg.username, msg.avatar)}
+                  style={{
+                    fontSize: 13, margin: "2px 0 5px",
+                    textShadow: "0 1px 3px #000",
+                    fontWeight: "bold", cursor: "pointer",
+                  }}
+                >
+                  {cleanName(msg.username)}
+                </div>
+                <div style={{
+                  display: "inline-block",
+                  background: "#8720cff2",
+                  border: "1px solid #c982ff",
+                  borderRadius: 3,
+                  padding: "10px 14px",
+                  fontSize: 14,
+                  lineHeight: 1.35,
+                  overflowWrap: "anywhere",
+                  maxWidth: "100%",
+                  boxShadow: "0 2px 5px #0003",
+                }}>
+                  {msg.text}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <div ref={msgEndRef} />
+      </div>
     </div>
   );
 }
